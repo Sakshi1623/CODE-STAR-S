@@ -56,7 +56,7 @@ def get_schema(response: Response) -> dict:
 async def lookup_user(request: Request, response: Response) -> JSONResponse:
     """
     Look up user by ID with active contract validation.
-    
+
     Validates required headers and body schema against active contract.
     Returns 200 with user data on success, 400/422/404 on errors.
     """
@@ -75,9 +75,9 @@ async def lookup_user(request: Request, response: Response) -> JSONResponse:
             content={"error": "unavailable"},
             headers=response.headers,
         )
-    
+
     contract = contracts.get_active()
-    
+
     # Validate required headers
     for header_name in contract["required_headers"]:
         if header_name not in request.headers:
@@ -87,7 +87,7 @@ async def lookup_user(request: Request, response: Response) -> JSONResponse:
                 content={"error": "missing_header", "header": header_name},
                 headers=response.headers,
             )
-    
+
     # Parse and validate body
     try:
         body = await request.json()
@@ -98,7 +98,7 @@ async def lookup_user(request: Request, response: Response) -> JSONResponse:
             content={"detail": [{"loc": ["body"], "msg": "Invalid JSON", "type": "value_error"}]},
             headers=response.headers,
         )
-    
+
     # Validate against body_schema
     try:
         jsonschema.validate(instance=body, schema=contract["body_schema"])
@@ -117,22 +117,28 @@ async def lookup_user(request: Request, response: Response) -> JSONResponse:
             },
             headers=response.headers,
         )
-    
+
     # Extract user ID from body based on schema structure
     user_id = None
     if "user_id" in body:
-        # v1, type_int schemas
+        # v1, type_int, header_tenant, header_billing schemas
         user_id = body["user_id"]
+    elif "uid" in body:
+        # rename_uid schema
+        user_id = body["uid"]
     elif "id" in body:
-        # rename_id schema
+        # rename_id, header_rename schemas
         user_id = body["id"]
     elif "target" in body and "id" in body["target"]:
-        # v2_full, nest_target, combo schemas
+        # v2_full, nest_target, combo, combo_billing schemas
         user_id = body["target"]["id"]
+    elif "data" in body and "user" in body["data"] and "id" in body["data"]["user"]:
+        # nest_deep schema
+        user_id = body["data"]["user"]["id"]
     elif "ref_a" in body:
         # ambiguous schema - use ref_a arbitrarily for testing
         user_id = body["ref_a"]
-    
+
     # Convert to int if needed
     if isinstance(user_id, str):
         try:
@@ -144,7 +150,7 @@ async def lookup_user(request: Request, response: Response) -> JSONResponse:
                 content={"error": "user_not_found"},
                 headers=response.headers,
             )
-    
+
     # Look up user
     if user_id not in USERS:
         _add_contract_headers(response)
@@ -153,7 +159,7 @@ async def lookup_user(request: Request, response: Response) -> JSONResponse:
             content={"error": "user_not_found"},
             headers=response.headers,
         )
-    
+
     # Success
     _execution_stats["successful_lookups"] += 1
     _add_contract_headers(response)

@@ -30,30 +30,34 @@ V1_LOOKUP_USER_SCHEMA = {
 def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
     """
     Execute task with baseline agent (no healing).
-    
+
     Uses hard-coded v1 schema for lookup_user tool.
     NO healing, NO classification, NO contract check, NO registry.
-    
+
     Args:
         task: Natural language task description
         budget: Shared budget for API and model calls
         client: HTTP client for API calls
-        
+
     Returns:
         AgentRun with execution results
     """
     start_time = time.time()
-    
+
     # Track metrics
     tokens_in_total = 0
     tokens_out_total = 0
     api_attempts = 0
-    
+
+    # Track timing for MTTR calculation
+    t_first_failure: float | None = None
+    t_first_success: float | None = None
+
     # Initialize conversation
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": task}
     ]
-    
+
     # Create LLM client
     try:
         llm_client = LLMClient(budget)
@@ -71,9 +75,11 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
             elapsed_seconds=time.time() - start_time,
             registry_versions_seen=[],
             reason=str(e),
-            correct=False
+            correct=False,
+            t_first_failure=None,
+            t_first_success=None,
         )
-    
+
     # Define tool with hard-coded v1 schema
     tools = [
         {
@@ -85,27 +91,27 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
             }
         }
     ]
-    
+
     # Main agent loop
     max_iterations = 10
     iteration = 0
-    
+
     try:
         while iteration < max_iterations:
             iteration += 1
-            
+
             # Make LLM call
             reply = llm_client.chat(messages, tools=tools)
-            
+
             # Track tokens
             tokens_in_total += reply.tokens_in
             tokens_out_total += reply.tokens_out
-            
+
             # Check if LLM returned final text
             if reply.text and not reply.tool_calls:
                 # Final answer received
                 elapsed = time.time() - start_time
-                
+
                 return AgentRun(
                     agent_name="baseline_agent",
                     success=True,
@@ -118,9 +124,11 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
                     elapsed_seconds=elapsed,
                     registry_versions_seen=[],  # No registry
                     reason=None,
-                    correct=is_correct(reply.text)
+                    correct=is_correct(reply.text),
+                    t_first_failure=t_first_failure,
+                    t_first_success=t_first_success,
                 )
-            
+
             # Process tool calls
             if reply.tool_calls:
                 # Add assistant message with tool calls
@@ -128,7 +136,7 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
                     "role": "assistant",
                     "content": reply.text if reply.text else None,
                 }
-                
+
                 # Format tool calls for OpenAI
                 tool_calls_for_msg = []
                 for i, tc in enumerate(reply.tool_calls):
@@ -140,12 +148,12 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
                             "arguments": json.dumps(tc.arguments)
                         }
                     })
-                
+
                 if tool_calls_for_msg:
                     assistant_msg["tool_calls"] = tool_calls_for_msg
-                
+
                 messages.append(assistant_msg)
-                
+
                 # Execute each tool call
                 for i, tool_call in enumerate(reply.tool_calls):
                     if tool_call.name != "lookup_user":
@@ -156,7 +164,7 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
                             "content": json.dumps({"error": f"Unknown tool: {tool_call.name}"})
                         })
                         continue
-                    
+
                     # Execute lookup_user by POSTing to API
                     # NO healing, NO classification - just raw API call
                     if budget.exhausted():
@@ -174,12 +182,14 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
                             elapsed_seconds=elapsed,
                             registry_versions_seen=[],
                             reason="Budget exhausted before API call",
-                            correct=False
+                            correct=False,
+                            t_first_failure=t_first_failure,
+                            t_first_success=t_first_success,
                         )
-                    
+
                     budget.consume_api()
                     api_attempts += 1
-                    
+
                     # Make raw API call - return status code and body as text
                     try:
                         response = client.post(
@@ -187,23 +197,37 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
                             json=tool_call.arguments,
                             headers={}  # No extra headers
                         )
-                        
+
+                        # Track timing
+                        if response.status_code < 200 or response.status_code >= 300:
+                            # Non-2xx response
+                            if t_first_failure is None:
+                                t_first_failure = time.time()
+                        else:
+                            # 2xx response
+                            if t_first_failure is not None and t_first_success is None:
+                                # First success after a failure
+                                t_first_success = time.time()
+
                         # Return raw status code and response body as text to model
                         result_text = f"Status: {response.status_code}\nResponse: {response.text}"
-                        
+
                     except Exception as e:
+                        # Network error
+                        if t_first_failure is None:
+                            t_first_failure = time.time()
                         result_text = f"Error: {str(e)}"
-                    
+
                     # Add tool result to conversation
                     messages.append({
                         "role": "tool",
                         "tool_call_id": f"call_{i}",
                         "content": result_text
                     })
-                
+
                 # Continue to next iteration
                 continue
-            
+
             # No text and no tool calls - unexpected
             elapsed = time.time() - start_time
             return AgentRun(
@@ -218,9 +242,11 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
                 elapsed_seconds=elapsed,
                 registry_versions_seen=[],
                 reason="LLM returned neither text nor tool calls",
-                correct=False
+                correct=False,
+                t_first_failure=t_first_failure,
+                t_first_success=t_first_success,
             )
-        
+
         # Max iterations reached
         elapsed = time.time() - start_time
         return AgentRun(
@@ -235,13 +261,15 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
             elapsed_seconds=elapsed,
             registry_versions_seen=[],
             reason=f"Maximum iterations ({max_iterations}) reached",
-            correct=False
+            correct=False,
+            t_first_failure=t_first_failure,
+            t_first_success=t_first_success,
         )
-    
+
     except BudgetExhausted:
         # Budget exhausted
         elapsed = time.time() - start_time
-        
+
         return AgentRun(
             agent_name="baseline_agent",
             success=False,
@@ -254,5 +282,7 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
             elapsed_seconds=elapsed,
             registry_versions_seen=[],
             reason="Budget exhausted",
-            correct=False
+            correct=False,
+            t_first_failure=t_first_failure,
+            t_first_success=t_first_success,
         )

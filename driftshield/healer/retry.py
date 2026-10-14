@@ -21,14 +21,14 @@ HealStatus = Literal["ok", "healed", "safe_stop", "failed"]
 class Budget:
     """
     Shared budget for API and model calls.
-    
+
     Enforces hard limits to prevent unbounded retries.
     """
-    
+
     def __init__(self, max_api_attempts: int = 5, max_model_calls: int = 8):
         """
         Initialize budget.
-        
+
         Args:
             max_api_attempts: Maximum API attempts allowed
             max_model_calls: Maximum model calls allowed
@@ -37,15 +37,15 @@ class Budget:
         self.max_model_calls = max_model_calls
         self.api_attempts = 0
         self.model_calls = 0
-    
+
     def consume_api(self) -> None:
         """Consume one API attempt."""
         self.api_attempts += 1
-    
+
     def consume_model(self) -> None:
         """Consume one model call."""
         self.model_calls += 1
-    
+
     def exhausted(self) -> bool:
         """Check if budget is exhausted."""
         return (
@@ -57,7 +57,7 @@ class Budget:
 class HealResult(dict):
     """
     Result of healing execution.
-    
+
     Fields:
     - status: ok, healed, safe_stop, or failed
     - result_body: Response body on success
@@ -67,6 +67,8 @@ class HealResult(dict):
     - registry_version_after: Version after healing (if patched)
     - elapsed_seconds: Total time from first failure to success
     - attempts: Number of API calls made
+    - t_first_failure: Time of first non-2xx response (or None)
+    - t_first_success: Time of first 2xx response after failure (or None)
     """
     pass
 
@@ -74,10 +76,10 @@ class HealResult(dict):
 class HealingExecutor:
     """
     Executes tool calls with automatic healing on drift.
-    
+
     Combines all healing components into a complete flow.
     """
-    
+
     def __init__(
         self,
         registry: ToolRegistry,
@@ -87,7 +89,7 @@ class HealingExecutor:
     ):
         """
         Initialize healing executor.
-        
+
         Args:
             registry: Tool registry
             client: HTTP client
@@ -98,21 +100,23 @@ class HealingExecutor:
         self.client = client
         self.budget = budget
         self.log_events = log_events
-    
+
     def execute(self, tool_name: str, args: dict[str, Any]) -> HealResult:
         """
         Execute tool with automatic healing.
-        
+
         Args:
             tool_name: Name of tool to call
             args: Arguments for tool
-            
+
         Returns:
             HealResult with status and details
         """
         start_time = time.time()
         attempts = 0
-        
+        t_first_failure: float | None = None
+        t_first_success: float | None = None
+
         # Get tool from registry
         tool = self.registry.get(tool_name)
         if tool is None:
@@ -125,14 +129,16 @@ class HealingExecutor:
                 "registry_version_after": None,
                 "elapsed_seconds": time.time() - start_time,
                 "attempts": 0,
+                "t_first_failure": None,
+                "t_first_success": None,
             })
-        
+
         version_before = tool["version"]
-        
+
         # Step 1: Initial call
         self.budget.consume_api()
         attempts += 1
-        
+
         result = call_tool(
             client=self.client,
             registry_tool=tool,
@@ -140,9 +146,10 @@ class HealingExecutor:
             args=args,
             extra_headers={},
         )
-        
+
         if result["ok"]:
             # Success - no healing needed
+            # No failure occurred, so t_first_failure and t_first_success remain None
             return HealResult({
                 "status": "ok",
                 "result_body": result["body"],
@@ -152,8 +159,13 @@ class HealingExecutor:
                 "registry_version_after": version_before,
                 "elapsed_seconds": time.time() - start_time,
                 "attempts": attempts,
+                "t_first_failure": None,
+                "t_first_success": None,
             })
-        
+
+        # First failure occurred
+        t_first_failure = time.time()
+
         # Step 2: Classify error
         def fetch_live_contract():
             try:
@@ -162,27 +174,27 @@ class HealingExecutor:
                     response = self.client.get("/schema")
                 else:
                     response = self.client.get(f"{self.client.base_url}/schema")
-                
+
                 if response.status_code == 200:
                     return response.json()
             except Exception:
                 pass
             return None
-        
+
         classification = classify(result, tool, fetch_live_contract)
         kind = classification["kind"]
-        
+
         # Handle network errors with bounded retry
         if kind == "network":
             # Max 2 extra tries with short backoff
             for retry_num in range(2):
                 if self.budget.exhausted():
                     break
-                
+
                 time.sleep(0.1 * (retry_num + 1))  # Short backoff
                 self.budget.consume_api()
                 attempts += 1
-                
+
                 result = call_tool(
                     client=self.client,
                     registry_tool=tool,
@@ -190,8 +202,9 @@ class HealingExecutor:
                     args=args,
                     extra_headers={},
                 )
-                
+
                 if result["ok"]:
+                    t_first_success = time.time()
                     return HealResult({
                         "status": "ok",
                         "result_body": result["body"],
@@ -201,8 +214,10 @@ class HealingExecutor:
                         "registry_version_after": version_before,
                         "elapsed_seconds": time.time() - start_time,
                         "attempts": attempts,
+                        "t_first_failure": t_first_failure,
+                        "t_first_success": t_first_success,
                     })
-            
+
             # Network retries exhausted
             return HealResult({
                 "status": "safe_stop",
@@ -213,8 +228,10 @@ class HealingExecutor:
                 "registry_version_after": version_before,
                 "elapsed_seconds": time.time() - start_time,
                 "attempts": attempts,
+                "t_first_failure": t_first_failure,
+                "t_first_success": None,
             })
-        
+
         # Auth errors - no refresh in prototype
         if kind == "auth":
             return HealResult({
@@ -226,8 +243,10 @@ class HealingExecutor:
                 "registry_version_after": version_before,
                 "elapsed_seconds": time.time() - start_time,
                 "attempts": attempts,
+                "t_first_failure": t_first_failure,
+                "t_first_success": None,
             })
-        
+
         # Invalid data or unknown - not drift
         if kind in ["invalid_data", "unknown"]:
             return HealResult({
@@ -239,19 +258,21 @@ class HealingExecutor:
                 "registry_version_after": version_before,
                 "elapsed_seconds": time.time() - start_time,
                 "attempts": attempts,
+                "t_first_failure": t_first_failure,
+                "t_first_success": None,
             })
-        
+
         # Step 3: Handle drift
         if kind == "drift":
             live_contract = classification["live_contract"]
             if live_contract is None:
-                return self._safe_stop("Could not fetch live contract", version_before, start_time, attempts)
-            
+                return self._safe_stop("Could not fetch live contract", version_before, start_time, attempts, t_first_failure)
+
             live_hash = live_contract["content_hash"]
-            
+
             # Diff
             changes = diff(tool, live_contract)
-            
+
             # Check for ambiguous or errors
             for change in changes:
                 if change.get("type") == "ambiguous":
@@ -259,9 +280,10 @@ class HealingExecutor:
                         f"Ambiguous change: {change['removed']} → {change['candidates']}",
                         version_before,
                         start_time,
-                        attempts
+                        attempts,
+                        t_first_failure
                     )
-            
+
             # Adapt
             adapt_result = adapt(args, changes)
             if adapt_result["error"] is not None:
@@ -269,13 +291,14 @@ class HealingExecutor:
                     f"Adaptation error: {adapt_result['error']}",
                     version_before,
                     start_time,
-                    attempts
+                    attempts,
+                    t_first_failure
                 )
-            
+
             payload = adapt_result["payload"]
             provenance = adapt_result["provenance"]
             needed_headers = adapt_result["needed_headers"]
-            
+
             # Resolve headers
             headers, header_provenance, missing = resolve_headers(needed_headers)
             if missing:
@@ -288,8 +311,10 @@ class HealingExecutor:
                     "registry_version_after": version_before,
                     "elapsed_seconds": time.time() - start_time,
                     "attempts": attempts,
+                    "t_first_failure": t_first_failure,
+                    "t_first_success": None,
                 })
-            
+
             # Check provenance
             combined_provenance = {**provenance, **header_provenance}
             if not check_provenance(payload, provenance):
@@ -297,9 +322,10 @@ class HealingExecutor:
                     "Provenance check failed - untagged values",
                     version_before,
                     start_time,
-                    attempts
+                    attempts,
+                    t_first_failure
                 )
-            
+
             # Validate locally against live contract
             try:
                 jsonschema.validate(instance=payload, schema=live_contract["body_schema"])
@@ -308,9 +334,10 @@ class HealingExecutor:
                     f"Local validation failed: {e.message}",
                     version_before,
                     start_time,
-                    attempts
+                    attempts,
+                    t_first_failure
                 )
-            
+
             # Step 4: Build new snapshot and apply patch
             new_snapshot, snapshot_error = build_new_snapshot(tool, changes, live_contract)
             if new_snapshot is None:
@@ -318,21 +345,22 @@ class HealingExecutor:
                     f"Could not build new snapshot: {snapshot_error}",
                     version_before,
                     start_time,
-                    attempts
+                    attempts,
+                    t_first_failure
                 )
-            
+
             # Apply patch (version bump)
             self.registry.apply_patch(tool_name, new_snapshot, "schema drift detected")
             version_after = self.registry.version(tool_name)
-            
+
             # Step 5: Retry once with adapted payload
             if self.budget.exhausted():
                 self.registry.rollback(tool_name)
-                return self._safe_stop("Budget exhausted before retry", version_before, start_time, attempts)
-            
+                return self._safe_stop("Budget exhausted before retry", version_before, start_time, attempts, t_first_failure)
+
             self.budget.consume_api()
             attempts += 1
-            
+
             patched_tool = self.registry.get(tool_name)
             retry_result = call_tool(
                 client=self.client,
@@ -341,9 +369,11 @@ class HealingExecutor:
                 args=payload,
                 extra_headers=headers,
             )
-            
+
             # Check if retry succeeded
             if retry_result["ok"]:
+                t_first_success = time.time()
+
                 # Verify contract hash matches (headers are case-insensitive)
                 response_hash = retry_result["headers"].get("X-Contract-Hash") or retry_result["headers"].get("x-contract-hash")
                 if response_hash != live_hash:
@@ -362,14 +392,16 @@ class HealingExecutor:
                         "registry_version_after": version_before,
                         "elapsed_seconds": time.time() - start_time,
                         "attempts": attempts,
+                        "t_first_failure": t_first_failure,
+                        "t_first_success": t_first_success,
                     })
-                
+
                 # Success!
                 self._log_event(
                     tool_name, version_before, version_after, live_hash, response_hash,
                     changes, combined_provenance, "healed", time.time() - start_time
                 )
-                
+
                 return HealResult({
                     "status": "healed",
                     "result_body": retry_result["body"],
@@ -379,6 +411,8 @@ class HealingExecutor:
                     "registry_version_after": version_after,
                     "elapsed_seconds": time.time() - start_time,
                     "attempts": attempts,
+                    "t_first_failure": t_first_failure,
+                    "t_first_success": t_first_success,
                 })
             else:
                 # Retry failed - rollback
@@ -387,7 +421,7 @@ class HealingExecutor:
                     tool_name, version_before, version_after, live_hash, None,
                     changes, combined_provenance, "retry_failed", time.time() - start_time
                 )
-                
+
                 return HealResult({
                     "status": "safe_stop",
                     "result_body": None,
@@ -397,12 +431,14 @@ class HealingExecutor:
                     "registry_version_after": version_before,
                     "elapsed_seconds": time.time() - start_time,
                     "attempts": attempts,
+                    "t_first_failure": t_first_failure,
+                    "t_first_success": None,
                 })
-        
+
         # Should not reach here
-        return self._safe_stop("Unexpected classification result", version_before, start_time, attempts)
-    
-    def _safe_stop(self, reason: str, version: int, start_time: float, attempts: int) -> HealResult:
+        return self._safe_stop("Unexpected classification result", version_before, start_time, attempts, t_first_failure)
+
+    def _safe_stop(self, reason: str, version: int, start_time: float, attempts: int, t_first_failure: float | None = None) -> HealResult:
         """Create a safe_stop result."""
         return HealResult({
             "status": "safe_stop",
@@ -413,8 +449,10 @@ class HealingExecutor:
             "registry_version_after": version,
             "elapsed_seconds": time.time() - start_time,
             "attempts": attempts,
+            "t_first_failure": t_first_failure,
+            "t_first_success": None,
         })
-    
+
     def _log_event(
         self,
         tool_name: str,
@@ -430,7 +468,7 @@ class HealingExecutor:
         """Log healing event."""
         if not self.log_events:
             return
-        
+
         # Extract all leaf provenance values from nested structure
         def extract_leaf_values(prov: Any) -> list[str]:
             """Recursively extract leaf string values from provenance dict."""
@@ -441,7 +479,7 @@ class HealingExecutor:
             elif isinstance(prov, str):
                 result.append(prov)
             return result
-        
+
         event = {
             "event": "healing",
             "tool": tool_name,
@@ -461,5 +499,5 @@ class HealingExecutor:
             "outcome": outcome,
             "elapsed_seconds": elapsed,
         }
-        
+
         log.log_event(event)
