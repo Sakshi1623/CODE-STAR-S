@@ -1,0 +1,258 @@
+"""Baseline agent without healing - for comparison.
+
+This agent uses a hard-coded v1 schema and has no healing capability.
+It demonstrates the behavior of a standard tool-calling agent when faced
+with schema drift.
+"""
+
+import time
+import json
+from typing import Any
+
+import httpx
+
+from driftshield.agents.llm import LLMClient, BudgetExhausted
+from driftshield.agents.common import AgentRun, is_correct
+from driftshield.healer.retry import Budget
+
+
+# Hard-coded v1 schema - never updates
+V1_LOOKUP_USER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "user_id": {"type": "string"}
+    },
+    "required": ["user_id"],
+    "additionalProperties": False,
+}
+
+
+def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
+    """
+    Execute task with baseline agent (no healing).
+    
+    Uses hard-coded v1 schema for lookup_user tool.
+    NO healing, NO classification, NO contract check, NO registry.
+    
+    Args:
+        task: Natural language task description
+        budget: Shared budget for API and model calls
+        client: HTTP client for API calls
+        
+    Returns:
+        AgentRun with execution results
+    """
+    start_time = time.time()
+    
+    # Track metrics
+    tokens_in_total = 0
+    tokens_out_total = 0
+    api_attempts = 0
+    
+    # Initialize conversation
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": task}
+    ]
+    
+    # Create LLM client
+    try:
+        llm_client = LLMClient(budget)
+    except ValueError as e:
+        # API key not configured
+        return AgentRun(
+            agent_name="baseline_agent",
+            success=False,
+            final_text="",
+            status="failed",
+            model_calls=budget.model_calls,
+            api_attempts=api_attempts,
+            tokens_in=0,
+            tokens_out=0,
+            elapsed_seconds=time.time() - start_time,
+            registry_versions_seen=[],
+            reason=str(e),
+            correct=False
+        )
+    
+    # Define tool with hard-coded v1 schema
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup_user",
+                "description": "Look up a user by ID and return their information",
+                "parameters": V1_LOOKUP_USER_SCHEMA
+            }
+        }
+    ]
+    
+    # Main agent loop
+    max_iterations = 10
+    iteration = 0
+    
+    try:
+        while iteration < max_iterations:
+            iteration += 1
+            
+            # Make LLM call
+            reply = llm_client.chat(messages, tools=tools)
+            
+            # Track tokens
+            tokens_in_total += reply.tokens_in
+            tokens_out_total += reply.tokens_out
+            
+            # Check if LLM returned final text
+            if reply.text and not reply.tool_calls:
+                # Final answer received
+                elapsed = time.time() - start_time
+                
+                return AgentRun(
+                    agent_name="baseline_agent",
+                    success=True,
+                    final_text=reply.text,
+                    status="ok",
+                    model_calls=budget.model_calls,
+                    api_attempts=api_attempts,
+                    tokens_in=tokens_in_total,
+                    tokens_out=tokens_out_total,
+                    elapsed_seconds=elapsed,
+                    registry_versions_seen=[],  # No registry
+                    reason=None,
+                    correct=is_correct(reply.text)
+                )
+            
+            # Process tool calls
+            if reply.tool_calls:
+                # Add assistant message with tool calls
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": reply.text if reply.text else None,
+                }
+                
+                # Format tool calls for OpenAI
+                tool_calls_for_msg = []
+                for i, tc in enumerate(reply.tool_calls):
+                    tool_calls_for_msg.append({
+                        "id": f"call_{i}",
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments)
+                        }
+                    })
+                
+                if tool_calls_for_msg:
+                    assistant_msg["tool_calls"] = tool_calls_for_msg
+                
+                messages.append(assistant_msg)
+                
+                # Execute each tool call
+                for i, tool_call in enumerate(reply.tool_calls):
+                    if tool_call.name != "lookup_user":
+                        # Unknown tool
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": f"call_{i}",
+                            "content": json.dumps({"error": f"Unknown tool: {tool_call.name}"})
+                        })
+                        continue
+                    
+                    # Execute lookup_user by POSTing to API
+                    # NO healing, NO classification - just raw API call
+                    if budget.exhausted():
+                        # Budget exhausted
+                        elapsed = time.time() - start_time
+                        return AgentRun(
+                            agent_name="baseline_agent",
+                            success=False,
+                            final_text="",
+                            status="budget_exhausted",
+                            model_calls=budget.model_calls,
+                            api_attempts=api_attempts,
+                            tokens_in=tokens_in_total,
+                            tokens_out=tokens_out_total,
+                            elapsed_seconds=elapsed,
+                            registry_versions_seen=[],
+                            reason="Budget exhausted before API call",
+                            correct=False
+                        )
+                    
+                    budget.consume_api()
+                    api_attempts += 1
+                    
+                    # Make raw API call - return status code and body as text
+                    try:
+                        response = client.post(
+                            "/lookup",
+                            json=tool_call.arguments,
+                            headers={}  # No extra headers
+                        )
+                        
+                        # Return raw status code and response body as text to model
+                        result_text = f"Status: {response.status_code}\nResponse: {response.text}"
+                        
+                    except Exception as e:
+                        result_text = f"Error: {str(e)}"
+                    
+                    # Add tool result to conversation
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": f"call_{i}",
+                        "content": result_text
+                    })
+                
+                # Continue to next iteration
+                continue
+            
+            # No text and no tool calls - unexpected
+            elapsed = time.time() - start_time
+            return AgentRun(
+                agent_name="baseline_agent",
+                success=False,
+                final_text="",
+                status="failed",
+                model_calls=budget.model_calls,
+                api_attempts=api_attempts,
+                tokens_in=tokens_in_total,
+                tokens_out=tokens_out_total,
+                elapsed_seconds=elapsed,
+                registry_versions_seen=[],
+                reason="LLM returned neither text nor tool calls",
+                correct=False
+            )
+        
+        # Max iterations reached
+        elapsed = time.time() - start_time
+        return AgentRun(
+            agent_name="baseline_agent",
+            success=False,
+            final_text="",
+            status="failed",
+            model_calls=budget.model_calls,
+            api_attempts=api_attempts,
+            tokens_in=tokens_in_total,
+            tokens_out=tokens_out_total,
+            elapsed_seconds=elapsed,
+            registry_versions_seen=[],
+            reason=f"Maximum iterations ({max_iterations}) reached",
+            correct=False
+        )
+    
+    except BudgetExhausted:
+        # Budget exhausted
+        elapsed = time.time() - start_time
+        
+        return AgentRun(
+            agent_name="baseline_agent",
+            success=False,
+            final_text="",
+            status="budget_exhausted",
+            model_calls=budget.model_calls,
+            api_attempts=api_attempts,
+            tokens_in=tokens_in_total,
+            tokens_out=tokens_out_total,
+            elapsed_seconds=elapsed,
+            registry_versions_seen=[],
+            reason="Budget exhausted",
+            correct=False
+        )
