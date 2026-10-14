@@ -222,6 +222,85 @@ CONTRACTS: dict[str, Contract] = {
             "additionalProperties": False,
         },
     ),
+    
+    "rename_uid": _build_contract(
+        schema_version="rename_uid",
+        operation="lookup_user",
+        body_schema={
+            "type": "object",
+            "properties": {
+                "uid": {"type": "string"}
+            },
+            "required": ["uid"],
+            "additionalProperties": False,
+        },
+        mappings=[{"from": "user_id", "to": "uid"}],
+    ),
+    
+    "nest_deep": _build_contract(
+        schema_version="nest_deep",
+        operation="lookup_user",
+        body_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "properties": {
+                        "user": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"}
+                            },
+                            "required": ["id"],
+                            "additionalProperties": False,
+                        }
+                    },
+                    "required": ["user"],
+                    "additionalProperties": False,
+                }
+            },
+            "required": ["data"],
+            "additionalProperties": False,
+        },
+        mappings=[{"from": "user_id", "to": "data.user.id"}],
+    ),
+    
+    "header_rename": _build_contract(
+        schema_version="header_rename",
+        operation="lookup_user",
+        body_schema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"}
+            },
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+        required_headers=["X-Tenant-Token"],
+        mappings=[{"from": "user_id", "to": "id"}],
+    ),
+    
+    "combo_billing": _build_contract(
+        schema_version="combo_billing",
+        operation="lookup_user",
+        body_schema={
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"}
+                    },
+                    "required": ["id"],
+                    "additionalProperties": False,
+                }
+            },
+            "required": ["target"],
+            "additionalProperties": False,
+        },
+        required_headers=["X-Billing-Region"],
+        mappings=[{"from": "user_id", "to": "target.id"}],
+    ),
 }
 
 

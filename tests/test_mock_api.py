@@ -97,6 +97,18 @@ def test_all_contracts_valid_requests(client):
         
         ("ambiguous", {"ref_a": "123", "ref_b": "456"}, {}, True),
         ("ambiguous", {"user_id": "123"}, {}, False),  # Wrong fields
+        
+        ("rename_uid", {"uid": "123"}, {}, True),
+        ("rename_uid", {"user_id": "123"}, {}, False),  # Wrong field name
+        
+        ("nest_deep", {"data": {"user": {"id": "123"}}}, {}, True),
+        ("nest_deep", {"user_id": "123"}, {}, False),  # Not nested
+        
+        ("header_rename", {"id": "123"}, {"X-Tenant-Token": "token"}, True),
+        ("header_rename", {"id": "123"}, {}, False),  # Missing header
+        
+        ("combo_billing", {"target": {"id": 123}}, {"X-Billing-Region": "us-east"}, True),
+        ("combo_billing", {"target": {"id": 123}}, {}, False),  # Missing header
     ]
     
     for contract_name, body, headers, should_succeed in test_cases:
