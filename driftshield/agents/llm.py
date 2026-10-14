@@ -1,10 +1,11 @@
-"""LLM wrapper for OpenAI gpt-6-luna with budget integration.
+"""LLM wrapper for Google Gemini API through OpenAI-compatible endpoint.
 
-This module provides a thin wrapper around the OpenAI Python SDK, integrating
-with DriftShield's existing Budget system and configuration.
+This module provides a thin wrapper around the OpenAI Python SDK configured
+to use Google's Gemini API, integrating with DriftShield's existing Budget
+system and configuration.
 
-IMPORTANT: gpt-6-luna only supports default temperature (1).
-Do not explicitly pass temperature=0, as it will be rejected by the API.
+The OpenAI SDK is used to connect to Gemini's OpenAI-compatible endpoint:
+https://generativelanguage.googleapis.com/v1beta/openai/
 """
 
 import os
@@ -52,7 +53,7 @@ class LLMReply:
 
 class LLMClient:
     """
-    Thin wrapper around OpenAI SDK for gpt-6-luna.
+    Thin wrapper around OpenAI SDK for Google Gemini API.
     
     Integrates with DriftShield's Budget system and extracts actual
     token counts from API responses.
@@ -66,18 +67,22 @@ class LLMClient:
             budget: Shared budget for tracking model calls
             
         Raises:
-            ValueError: If LLM_API_KEY is not configured
+            ValueError: If GEMINI_API_KEY is not configured
         """
-        # Load .env to ensure LLM_API_KEY is available
+        # Load .env to ensure GEMINI_API_KEY is available
         load_dotenv(override=True)
         
-        api_key = os.getenv("LLM_API_KEY")
+        api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise ValueError("LLM_API_KEY not found in environment")
+            raise ValueError("GEMINI_API_KEY not found in environment")
         
-        self.client = OpenAI(api_key=api_key)
+        # Configure OpenAI SDK to use Gemini's OpenAI-compatible endpoint
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+        )
         self.budget = budget
-        self.model = "gpt-6-luna"
+        self.model = "gemini-3.8-flash"
     
     def chat(
         self,
@@ -105,20 +110,17 @@ class LLMClient:
         self.budget.consume_model()
         
         # Prepare request parameters
-        # IMPORTANT: Do not pass temperature=0 for gpt-6-luna
-        # The model only supports its default temperature of 1
+        # Do not pass temperature (use model default)
         request_params: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "max_completion_tokens": 500,  # gpt-6-luna requires max_completion_tokens
+            "max_tokens": 500,  # Gemini's OpenAI-compatible endpoint uses max_tokens
         }
         
         # Add tools if provided
         if tools:
             request_params["tools"] = tools
             request_params["tool_choice"] = "auto"
-            # gpt-6-luna requires reasoning_effort='none' for function tools
-            request_params["reasoning_effort"] = "none"
         
         # Make the API call
         response = self.client.chat.completions.create(**request_params)

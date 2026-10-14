@@ -12,10 +12,10 @@ from driftshield.mock_api.server import app
 from driftshield.mock_api import contracts
 
 
-# Skip real API tests if LLM_API_KEY is not configured
+# Skip real API tests if GEMINI_API_KEY is not configured
 skip_if_no_key = pytest.mark.skipif(
-    not os.getenv("LLM_API_KEY"),
-    reason="LLM_API_KEY not configured"
+    not os.getenv("GEMINI_API_KEY"),
+    reason="GEMINI_API_KEY not configured"
 )
 
 

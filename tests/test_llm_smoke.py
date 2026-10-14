@@ -1,8 +1,8 @@
 """Smoke tests for LLM client with real and mocked API calls.
 
-These tests verify the LLM client integration with OpenAI API
-and budget tracking, using both real API calls (when configured)
-and mocked calls for unit testing.
+These tests verify the LLM client integration with Google Gemini API
+(through OpenAI-compatible endpoint) and budget tracking, using both
+real API calls (when configured) and mocked calls for unit testing.
 """
 
 import os
@@ -14,10 +14,10 @@ from driftshield.agents.llm import LLMClient, LLMReply, ToolCall, BudgetExhauste
 from driftshield.healer.retry import Budget
 
 
-# Skip real API tests if LLM_API_KEY is not configured
+# Skip real API tests if GEMINI_API_KEY is not configured
 skip_if_no_key = pytest.mark.skipif(
-    not os.getenv("LLM_API_KEY"),
-    reason="LLM_API_KEY not configured"
+    not os.getenv("GEMINI_API_KEY"),
+    reason="GEMINI_API_KEY not configured"
 )
 
 
@@ -69,8 +69,11 @@ def test_llm_budget_integration_mocked():
     """
     budget = Budget(max_model_calls=2, max_api_attempts=5)
     
-    # Mock the OpenAI client
-    with patch('driftshield.agents.llm.OpenAI') as mock_openai:
+    # Mock the OpenAI client and load_dotenv
+    with patch('driftshield.agents.llm.load_dotenv'), \
+         patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), \
+         patch('driftshield.agents.llm.OpenAI') as mock_openai:
+        
         # Create mock response
         mock_response = Mock()
         mock_response.choices = [Mock()]
@@ -86,6 +89,13 @@ def test_llm_budget_integration_mocked():
         mock_openai.return_value = mock_client_instance
         
         client = LLMClient(budget)
+        
+        # Verify Gemini configuration
+        mock_openai.assert_called_once_with(
+            api_key='test-key',
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+        )
+        assert client.model == "gemini-3.8-flash"
         
         # First call should succeed
         reply1 = client.chat([{"role": "user", "content": "Hello"}])
@@ -111,7 +121,10 @@ def test_llm_tool_calls_mocked():
     """
     budget = Budget(max_model_calls=1, max_api_attempts=5)
     
-    with patch('driftshield.agents.llm.OpenAI') as mock_openai:
+    with patch('driftshield.agents.llm.load_dotenv'), \
+         patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), \
+         patch('driftshield.agents.llm.OpenAI') as mock_openai:
+        
         # Create mock response with tool calls
         mock_tool_call = Mock()
         mock_tool_call.function.name = "lookup_user"
@@ -151,6 +164,12 @@ def test_llm_tool_calls_mocked():
         
         reply = client.chat([{"role": "user", "content": "Look up user 123"}], tools=tools)
         
+        # Verify max_tokens parameter is used (not max_completion_tokens)
+        call_args = mock_client_instance.chat.completions.create.call_args
+        assert 'max_tokens' in call_args[1]
+        assert call_args[1]['max_tokens'] == 500
+        assert 'reasoning_effort' not in call_args[1]  # Should not be present for Gemini
+        
         # Check tool calls
         assert reply.text is None
         assert len(reply.tool_calls) == 1
@@ -171,7 +190,10 @@ def test_llm_malformed_tool_arguments_mocked():
     """
     budget = Budget(max_model_calls=1, max_api_attempts=5)
     
-    with patch('driftshield.agents.llm.OpenAI') as mock_openai:
+    with patch('driftshield.agents.llm.load_dotenv'), \
+         patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), \
+         patch('driftshield.agents.llm.OpenAI') as mock_openai:
+        
         # Create mock response with malformed tool arguments
         mock_tool_call = Mock()
         mock_tool_call.function.name = "lookup_user"
@@ -202,23 +224,23 @@ def test_llm_malformed_tool_arguments_mocked():
 
 def test_llm_client_requires_api_key():
     """
-    Unit test: Verify client requires LLM_API_KEY.
+    Unit test: Verify client requires GEMINI_API_KEY.
     
     Tests that client initialization fails gracefully without API key.
     """
     budget = Budget(max_model_calls=1, max_api_attempts=5)
     
     # Temporarily remove API key from environment
-    original_key = os.environ.get("LLM_API_KEY")
-    if "LLM_API_KEY" in os.environ:
-        del os.environ["LLM_API_KEY"]
+    original_key = os.environ.get("GEMINI_API_KEY")
+    if "GEMINI_API_KEY" in os.environ:
+        del os.environ["GEMINI_API_KEY"]
     
     try:
         # Mock load_dotenv to not reload the key
         with patch('driftshield.agents.llm.load_dotenv'):
-            with pytest.raises(ValueError, match="LLM_API_KEY not found"):
+            with pytest.raises(ValueError, match="GEMINI_API_KEY not found"):
                 LLMClient(budget)
     finally:
         # Restore original key
         if original_key:
-            os.environ["LLM_API_KEY"] = original_key
+            os.environ["GEMINI_API_KEY"] = original_key

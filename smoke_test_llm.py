@@ -1,9 +1,9 @@
-"""Smoke test for OpenAI API access with gpt-6-luna.
+"""Smoke test for Google Gemini API access through OpenAI-compatible endpoint.
 
 Safe minimal test that:
 - Loads .env locally
-- Reads LLM_API_KEY without exposing it
-- Makes one request to gpt-6-luna at temperature 0
+- Reads GEMINI_API_KEY without exposing it
+- Makes one request to gemini-3.8-flash using the model's default temperature
 - Reports token usage and errors clearly
 """
 
@@ -15,10 +15,10 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 # Read API key
-api_key = os.getenv("LLM_API_KEY")
+api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
-    print("ERROR: LLM_API_KEY not found in .env file")
+    print("ERROR: GEMINI_API_KEY not found in .env file")
     sys.exit(1)
 
 # Mask key for display (show only first/last 4 chars)
@@ -36,20 +36,23 @@ try:
     
     print("✓ OpenAI package imported")
     
-    # Create client
-    client = OpenAI(api_key=api_key)
-    print("✓ OpenAI client created")
+    # Create client configured for Gemini's OpenAI-compatible endpoint
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+    )
+    print("✓ Gemini client created")
     
     # Make minimal request
-    print("\nMaking test request to gpt-6-luna...")
-    print("(Note: gpt-6-luna only supports default temperature=1)")
+    print("\nMaking test request to gemini-3.8-flash...")
+    print("(Using model's default temperature)")
     
     response = client.chat.completions.create(
-        model="gpt-6-luna",
+        model="gemini-3.8-flash",
         messages=[
             {"role": "user", "content": "Reply with exactly: Hello from DriftShield"}
         ],
-        max_completion_tokens=50
+        max_tokens=50
     )
     
     # Extract response
@@ -69,9 +72,9 @@ try:
     print(f"  Total tokens:      {usage.total_tokens}")
     print("="*60)
     
-    print("\n✅ SUCCESS: OpenAI API access verified")
-    print(f"   Model: gpt-6-luna")
-    print(f"   Temperature: 1 (default, only supported value)")
+    print("\n✅ SUCCESS: Gemini API access verified")
+    print(f"   Model: gemini-3.8-flash")
+    print(f"   Temperature: Model default (not specified)")
     
 except Exception as e:
     error_msg = str(e)
@@ -84,18 +87,18 @@ except Exception as e:
     if "authentication" in error_msg.lower() or "invalid api key" in error_msg.lower():
         print("❌ AUTHENTICATION ERROR")
         print("   The API key may be invalid or expired")
-        print("   Check LLM_API_KEY in .env file")
+        print("   Check GEMINI_API_KEY in .env file")
     elif "model" in error_msg.lower() and "does not exist" in error_msg.lower():
         print("❌ MODEL ACCESS ERROR")
-        print("   Model 'gpt-6-luna' may not be available")
-        print("   Check your OpenAI account permissions")
+        print("   Model 'gemini-3.8-flash' may not be available")
+        print("   Check your Google Cloud project permissions")
     elif "quota" in error_msg.lower() or "rate limit" in error_msg.lower():
         print("❌ QUOTA/RATE LIMIT ERROR")
         print("   API quota exceeded or rate limit hit")
-        print("   Check your OpenAI account billing/limits")
+        print("   Check your Google Cloud project billing/limits")
     elif "connection" in error_msg.lower() or "timeout" in error_msg.lower():
         print("❌ NETWORK ERROR")
-        print("   Could not connect to OpenAI API")
+        print("   Could not connect to Gemini API")
         print("   Check your internet connection")
     else:
         print("❌ UNEXPECTED ERROR")
