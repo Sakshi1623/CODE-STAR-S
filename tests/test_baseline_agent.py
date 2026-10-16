@@ -173,3 +173,163 @@ def test_baseline_budget_exhausted_mocked(clean_api):
         assert result.status == "budget_exhausted"
         assert not result.success
         assert "exhausted" in result.reason.lower()
+
+
+def test_baseline_missing_api_key_returns_failed_mocked(clean_api):
+    """
+    Unit test: Verify baseline_agent.run() returns status='failed' when
+    GEMINI_API_KEY is not configured (LLMClient raises ValueError).
+
+    Covers baseline_agent.py lines 65-83:
+        try:
+            llm_client = LLMClient(budget)
+        except ValueError as e:
+            return AgentRun(status="failed", model_calls=budget.model_calls,
+                            reason=str(e), ...)
+
+    The test patches LLMClient inside baseline_agent so the constructor
+    raises ValueError unconditionally — no dependency on real env vars.
+    """
+    from unittest.mock import patch
+
+    budget = Budget(max_api_attempts=5, max_model_calls=8)
+
+    with patch('driftshield.agents.baseline_agent.LLMClient') as mock_client_class:
+        mock_client_class.side_effect = ValueError("GEMINI_API_KEY not found in environment")
+
+        result = run(STANDARD_TASK, budget, clean_api)
+
+    assert result.status == "failed", f"Expected 'failed', got: {result.status}"
+    assert result.success is False
+
+    # baseline_agent returns model_calls=budget.model_calls (see baseline_agent.py:71).
+    # budget.model_calls is 0 here because budget.consume_model() is only called
+    # inside LLMClient.chat(), which is never reached when LLMClient.__init__
+    # raises ValueError before the agent loop begins.
+    assert result.model_calls == 0, f"Expected 0 model calls, got: {result.model_calls}"
+
+    # No tokens consumed
+    assert result.tokens_in == 0
+    assert result.tokens_out == 0
+
+    # Reason must propagate the ValueError message
+    assert "GEMINI_API_KEY" in result.reason, (
+        f"Expected 'GEMINI_API_KEY' in reason, got: {result.reason!r}"
+    )
+
+    assert result.correct is False
+
+
+def test_baseline_empty_response_returns_failed_mocked(clean_api):
+    """
+    Unit test: Verify baseline_agent.run() returns status='failed' with the
+    'neither text nor tool calls' reason when the LLM returns a completely
+    empty response.
+
+    Covers baseline_agent.py lines 253-265:
+        # No text and no tool calls - unexpected
+        return AgentRun(
+            status="failed",
+            reason="LLM returned neither text nor tool calls",
+            ...
+        )
+
+    The branch is reached because:
+        if reply.text and not reply.tool_calls:  → False (text is None)
+        if reply.tool_calls:                     → False (list is empty)
+        # falls through to the unexpected return
+    """
+    from unittest.mock import Mock, patch
+
+    budget = Budget(max_api_attempts=5, max_model_calls=8)
+
+    with patch('driftshield.agents.baseline_agent.LLMClient') as mock_client_class:
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+
+        # Empty reply — no text, no tool calls
+        mock_reply = Mock()
+        mock_reply.text = None      # falsy → skips "final text" branch
+        mock_reply.tool_calls = []  # falsy → skips "tool calls" branch
+        mock_reply.tokens_in = 8
+        mock_reply.tokens_out = 0
+        mock_client.chat.return_value = mock_reply
+
+        result = run(STANDARD_TASK, budget, clean_api)
+
+    assert result.status == "failed", f"Expected 'failed', got: {result.status}"
+    assert result.success is False
+    assert result.reason == "LLM returned neither text nor tool calls", (
+        f"Unexpected reason: {result.reason!r}"
+    )
+
+    # Only one LLM call before early return
+    assert mock_client.chat.call_count == 1, (
+        f"Expected 1 LLM call, got: {mock_client.chat.call_count}"
+    )
+
+    # Tokens from the one call must be captured
+    assert result.tokens_in == 8
+    assert result.tokens_out == 0
+
+    assert result.correct is False
+
+
+def test_baseline_max_iterations_returns_failed_mocked(clean_api):
+    """
+    Unit test: Verify baseline_agent.run() returns status='failed' with a
+    'Maximum iterations' reason when the LLM keeps requesting tool calls
+    without ever returning a final text answer.
+
+    Covers baseline_agent.py lines 272-284:
+        # Max iterations reached
+        return AgentRun(
+            status="failed",
+            reason=f"Maximum iterations ({max_iterations}) reached",
+            ...
+        )
+
+    Budget is set to max_model_calls=15 so budget exhaustion does not fire
+    before the iteration ceiling of 10 is hit.  The mock HTTP client always
+    returns a successful API response so the agent never stops for network
+    reasons; only the iteration guard terminates the loop.
+    """
+    from unittest.mock import Mock, patch
+
+    # Budget must exceed max_iterations (10) to isolate the correct branch
+    budget = Budget(max_api_attempts=30, max_model_calls=15)
+
+    with patch('driftshield.agents.baseline_agent.LLMClient') as mock_client_class:
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+
+        # Every LLM call returns a tool call — never returns final text
+        mock_tool_call = Mock()
+        mock_tool_call.name = "lookup_user"
+        mock_tool_call.arguments = {"user_id": "123"}
+        mock_tool_call.id = "call_baseline_loop"
+        mock_tool_call.raw_tool_call = None  # deterministic fallback dict path
+
+        mock_reply = Mock()
+        mock_reply.text = None
+        mock_reply.tool_calls = [mock_tool_call]
+        mock_reply.tokens_in = 5
+        mock_reply.tokens_out = 3
+        mock_client.chat.return_value = mock_reply  # same reply every call
+
+        result = run(STANDARD_TASK, budget, clean_api)
+
+    assert result.status == "failed", f"Expected 'failed', got: {result.status}"
+    assert result.success is False
+
+    assert "Maximum iterations" in result.reason, (
+        f"Expected 'Maximum iterations' in reason, got: {result.reason!r}"
+    )
+    assert "10" in result.reason, (
+        f"Expected iteration count '10' in reason: {result.reason!r}"
+    )
+
+    # LLM called exactly 10 times (once per iteration before the guard fires)
+    assert mock_client.chat.call_count == 10, (
+        f"Expected 10 LLM calls, got: {mock_client.chat.call_count}"
+    )
