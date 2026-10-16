@@ -137,17 +137,36 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
                     "content": reply.text if reply.text else None,
                 }
 
-                # Format tool calls for OpenAI
+                # Convert tool calls to dict format for serialization
+                # Use model_dump() to preserve all provider-specific metadata (e.g., thought_signature)
                 tool_calls_for_msg = []
                 for i, tc in enumerate(reply.tool_calls):
-                    tool_calls_for_msg.append({
-                        "id": f"call_{i}",
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": json.dumps(tc.arguments)
-                        }
-                    })
+                    if tc.raw_tool_call:
+                        # Use SDK's model_dump() to get JSON-serializable dict
+                        # This preserves all extra fields including nested Gemini metadata
+                        if hasattr(tc.raw_tool_call, 'model_dump'):
+                            tc_dict = tc.raw_tool_call.model_dump()
+                        else:
+                            # Fallback for non-Pydantic objects (shouldn't happen with real SDK)
+                            tc_dict = {
+                                "id": tc.raw_tool_call.id,
+                                "type": tc.raw_tool_call.type,
+                                "function": {
+                                    "name": tc.raw_tool_call.function.name,
+                                    "arguments": tc.raw_tool_call.function.arguments,
+                                }
+                            }
+                        tool_calls_for_msg.append(tc_dict)
+                    else:
+                        # Fallback: manual construction (for backward compatibility)
+                        tool_calls_for_msg.append({
+                            "id": tc.id if tc.id else f"call_{i}",
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments)
+                            }
+                        })
 
                 if tool_calls_for_msg:
                     assistant_msg["tool_calls"] = tool_calls_for_msg
@@ -158,9 +177,10 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
                 for i, tool_call in enumerate(reply.tool_calls):
                     if tool_call.name != "lookup_user":
                         # Unknown tool
+                        tool_call_id = tool_call.id if tool_call.id else f"call_{i}"
                         messages.append({
                             "role": "tool",
-                            "tool_call_id": f"call_{i}",
+                            "tool_call_id": tool_call_id,
                             "content": json.dumps({"error": f"Unknown tool: {tool_call.name}"})
                         })
                         continue
@@ -219,9 +239,10 @@ def run(task: str, budget: Budget, client: httpx.Client) -> AgentRun:
                         result_text = f"Error: {str(e)}"
 
                     # Add tool result to conversation
+                    tool_call_id = tool_call.id if tool_call.id else f"call_{i}"
                     messages.append({
                         "role": "tool",
-                        "tool_call_id": f"call_{i}",
+                        "tool_call_id": tool_call_id,
                         "content": result_text
                     })
 

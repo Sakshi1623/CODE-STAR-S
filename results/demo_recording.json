@@ -1,0 +1,193 @@
+{
+  "version": "1.0",
+  "total_duration": 12.0,
+  "events": [
+    {
+      "type": "reset",
+      "timestamp": 0.0,
+      "data": {
+        "version": "v1",
+        "_note": "SIMULATED: Demo fixture data, not from live API"
+      }
+    },
+    {
+      "type": "baseline_v1",
+      "timestamp": 0.5,
+      "data": {
+        "success": true,
+        "status": "ok",
+        "tokens": 87,
+        "final_text": "The user's name is Asha Rao",
+        "_note": "SIMULATED: Demo fixture data, not from live Gemini"
+      }
+    },
+    {
+      "type": "healing_v1",
+      "timestamp": 1.0,
+      "data": {
+        "success": true,
+        "status": "ok",
+        "tokens": 92,
+        "registry_version": 1,
+        "final_text": "The user's name is Asha Rao",
+        "_note": "SIMULATED: Demo fixture data, not from live Gemini"
+      }
+    },
+    {
+      "type": "mutate",
+      "timestamp": 3.0,
+      "data": {
+        "contract": "v2_full",
+        "old_hash": "a1b2c3d4e5f67890",
+        "new_hash": "f09e8d7c6b5a4321",
+        "_note": "SIMULATED: Demo fixture hashes"
+      }
+    },
+    {
+      "type": "baseline_v2",
+      "timestamp": 5.0,
+      "data": {
+        "success": false,
+        "status": "failed",
+        "api_attempts": 3,
+        "model_calls": 2,
+        "tokens": 156,
+        "_note": "SIMULATED: Demo shows baseline failing on drift"
+      }
+    },
+    {
+      "type": "healing_v2",
+      "timestamp": 7.0,
+      "data": {
+        "success": true,
+        "status": "healed",
+        "registry_version": 2,
+        "recovery_time": 2.34,
+        "tokens": 245,
+        "events": [
+          [
+            "intercepted",
+            {
+              "ok": false,
+              "status_code": 400,
+              "_note": "SIMULATED: Demo shows API returning error"
+            }
+          ],
+          [
+            "classified",
+            {
+              "kind": "drift",
+              "_note": "SIMULATED: Demo shows drift classification"
+            }
+          ],
+          [
+            "contract_fetched",
+            {
+              "contract_hash": "f09e8d7c6b5a4321abcd",
+              "_note": "SIMULATED: Demo shows contract fetch"
+            }
+          ],
+          [
+            "diff",
+            {
+              "changes": [
+                {
+                  "type": "renamed",
+                  "removed": "user_id",
+                  "added": "id"
+                },
+                {
+                  "type": "nested",
+                  "added": "target"
+                }
+              ],
+              "_note": "SIMULATED: Demo shows schema diff detection"
+            }
+          ],
+          [
+            "provenance_checked",
+            {
+              "_note": "SIMULATED: Demo shows provenance validation"
+            }
+          ],
+          [
+            "validated",
+            {
+              "_note": "SIMULATED: Demo shows payload validation"
+            }
+          ],
+          [
+            "patched",
+            {
+              "version_before": 1,
+              "version_after": 2,
+              "_note": "SIMULATED: Demo shows registry patch"
+            }
+          ],
+          [
+            "retried",
+            {
+              "ok": true,
+              "status_code": 200,
+              "_note": "SIMULATED: Demo shows successful retry"
+            }
+          ]
+        ],
+        "_note": "SIMULATED: Demo fixture showing healing workflow"
+      }
+    },
+    {
+      "type": "patch_log",
+      "timestamp": 7.5,
+      "data": {
+        "tool": "lookup_user",
+        "registry_version_before": 1,
+        "registry_version_after": 2,
+        "outcome": "success",
+        "contract_hash_patched_against": "f09e8d7c6b5a4321",
+        "_note": "SIMULATED: Demo fixture patch log"
+      }
+    },
+    {
+      "type": "mutate_billing",
+      "timestamp": 9.5,
+      "data": {
+        "contract": "header_billing",
+        "_note": "SIMULATED: Demo shows mutation to unsafe schema"
+      }
+    },
+    {
+      "type": "safe_stop",
+      "timestamp": 10.0,
+      "data": {
+        "status": "safe_stop",
+        "reason": "Cannot resolve required header: X-Billing-Region",
+        "_note": "SIMULATED: Demo shows safe refusal of unheatable drift"
+      }
+    },
+    {
+      "type": "results",
+      "timestamp": 12.0,
+      "data": {
+        "metrics": {
+          "healing_agent": {
+            "ztar": 93.3,
+            "correct_refusal_rate": 100.0,
+            "mttr": "2.1s"
+          },
+          "baseline_agent": {
+            "ztar": 33.3,
+            "correct_refusal_rate": 0.0,
+            "mttr": "N/A"
+          }
+        },
+        "_note": "SIMULATED: Demo fixture metrics for presentation"
+      }
+    }
+  ],
+  "_metadata": {
+    "source": "offline_fixture_generator",
+    "created_for": "presentation_demo",
+    "note": "All data is simulated for demonstration purposes. Not from live API calls."
+  }
+}

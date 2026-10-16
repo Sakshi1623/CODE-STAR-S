@@ -4,6 +4,7 @@ This agent executes tasks using the LLM and tool system, automatically
 handling schema drift through the healing executor.
 """
 
+import json
 import time
 from typing import Any
 
@@ -149,24 +150,41 @@ def run(
             # Process tool calls
             if reply.tool_calls:
                 # Add assistant message with tool calls to conversation
-                # Format for OpenAI: assistant message with tool_calls
                 assistant_msg = {
                     "role": "assistant",
                     "content": reply.text if reply.text else None,
                 }
 
-                # Add tool_calls in OpenAI format
+                # Convert tool calls to dict format for serialization
+                # Use model_dump() to preserve all provider-specific metadata (e.g., thought_signature)
                 tool_calls_for_msg = []
                 for i, tc in enumerate(reply.tool_calls):
-                    import json
-                    tool_calls_for_msg.append({
-                        "id": f"call_{i}",
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": json.dumps(tc.arguments)
-                        }
-                    })
+                    if tc.raw_tool_call:
+                        # Use SDK's model_dump() to get JSON-serializable dict
+                        # This preserves all extra fields including nested Gemini metadata
+                        if hasattr(tc.raw_tool_call, 'model_dump'):
+                            tc_dict = tc.raw_tool_call.model_dump()
+                        else:
+                            # Fallback for non-Pydantic objects (shouldn't happen with real SDK)
+                            tc_dict = {
+                                "id": tc.raw_tool_call.id,
+                                "type": tc.raw_tool_call.type,
+                                "function": {
+                                    "name": tc.raw_tool_call.function.name,
+                                    "arguments": tc.raw_tool_call.function.arguments,
+                                }
+                            }
+                        tool_calls_for_msg.append(tc_dict)
+                    else:
+                        # Fallback: manual construction
+                        tool_calls_for_msg.append({
+                            "id": tc.id if tc.id else f"call_{i}",
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments)
+                            }
+                        })
 
                 if tool_calls_for_msg:
                     assistant_msg["tool_calls"] = tool_calls_for_msg
@@ -178,9 +196,10 @@ def run(
                     # Check if tool is supported
                     if tool_call.name != "lookup_user":
                         # Unsupported tool - add error message
+                        tool_call_id = tool_call.id if tool_call.id else f"call_{i}"
                         messages.append({
                             "role": "tool",
-                            "tool_call_id": f"call_{i}",
+                            "tool_call_id": tool_call_id,
                             "content": json.dumps({"error": f"Unsupported tool: {tool_call.name}"})
                         })
                         continue
@@ -226,9 +245,10 @@ def run(
                     else:
                         tool_content = json.dumps({"status": result["status"]})
 
+                    tool_call_id = tool_call.id if tool_call.id else f"call_{i}"
                     messages.append({
                         "role": "tool",
-                        "tool_call_id": f"call_{i}",
+                        "tool_call_id": tool_call_id,
                         "content": tool_content
                     })
 

@@ -85,7 +85,8 @@ class HealingExecutor:
         registry: ToolRegistry,
         client: httpx.Client,
         budget: Budget,
-        log_events: bool = True
+        log_events: bool = True,
+        on_event: callable = None
     ):
         """
         Initialize healing executor.
@@ -95,11 +96,13 @@ class HealingExecutor:
             client: HTTP client
             budget: Shared budget
             log_events: Whether to log healing events
+            on_event: Optional callback(event_name, event_data) for live monitoring
         """
         self.registry = registry
         self.client = client
         self.budget = budget
         self.log_events = log_events
+        self.on_event = on_event
 
     def execute(self, tool_name: str, args: dict[str, Any]) -> HealResult:
         """
@@ -147,9 +150,20 @@ class HealingExecutor:
             extra_headers={},
         )
 
+        self._emit_event("intercepted", {
+            "tool_name": tool_name,
+            "status_code": result["status"],
+            "ok": result["ok"]
+        })
+
         if result["ok"]:
             # Success - no healing needed
             # No failure occurred, so t_first_failure and t_first_success remain None
+            self._emit_event("success", {
+                "tool_name": tool_name,
+                "attempts": attempts,
+                "version": version_before
+            })
             return HealResult({
                 "status": "ok",
                 "result_body": result["body"],
@@ -183,6 +197,11 @@ class HealingExecutor:
 
         classification = classify(result, tool, fetch_live_contract)
         kind = classification["kind"]
+
+        self._emit_event("classified", {
+            "tool_name": tool_name,
+            "kind": kind
+        })
 
         # Handle network errors with bounded retry
         if kind == "network":
@@ -270,8 +289,24 @@ class HealingExecutor:
 
             live_hash = live_contract["content_hash"]
 
+            self._emit_event("contract_fetched", {
+                "tool_name": tool_name,
+                "contract_hash": live_hash
+            })
+
             # Diff
             changes = diff(tool, live_contract)
+
+            self._emit_event("diff", {
+                "tool_name": tool_name,
+                "changes": [{
+                    "type": c.get("type"),
+                    "tier": c.get("tier"),
+                    "removed": c.get("removed"),
+                    "added": c.get("added"),
+                    "candidates": c.get("candidates")
+                } for c in changes]
+            })
 
             # Check for ambiguous or errors
             for change in changes:
@@ -301,7 +336,19 @@ class HealingExecutor:
 
             # Resolve headers
             headers, header_provenance, missing = resolve_headers(needed_headers)
+
+            self._emit_event("provenance_checked", {
+                "tool_name": tool_name,
+                "needed_headers": needed_headers,
+                "missing": missing
+            })
+
             if missing:
+                self._emit_event("safe_stop", {
+                    "tool_name": tool_name,
+                    "reason": f"Required value unavailable: {', '.join(missing)}",
+                    "missing_headers": missing
+                })
                 return HealResult({
                     "status": "safe_stop",
                     "result_body": None,
@@ -329,6 +376,10 @@ class HealingExecutor:
             # Validate locally against live contract
             try:
                 jsonschema.validate(instance=payload, schema=live_contract["body_schema"])
+                self._emit_event("validated", {
+                    "tool_name": tool_name,
+                    "payload_valid": True
+                })
             except jsonschema.ValidationError as e:
                 return self._safe_stop(
                     f"Local validation failed: {e.message}",
@@ -353,6 +404,12 @@ class HealingExecutor:
             self.registry.apply_patch(tool_name, new_snapshot, "schema drift detected")
             version_after = self.registry.version(tool_name)
 
+            self._emit_event("patched", {
+                "tool_name": tool_name,
+                "version_before": version_before,
+                "version_after": version_after
+            })
+
             # Step 5: Retry once with adapted payload
             if self.budget.exhausted():
                 self.registry.rollback(tool_name)
@@ -369,6 +426,12 @@ class HealingExecutor:
                 args=payload,
                 extra_headers=headers,
             )
+
+            self._emit_event("retried", {
+                "tool_name": tool_name,
+                "status_code": retry_result["status"],
+                "ok": retry_result["ok"]
+            })
 
             # Check if retry succeeded
             if retry_result["ok"]:
@@ -501,3 +564,8 @@ class HealingExecutor:
         }
 
         log.log_event(event)
+
+    def _emit_event(self, event_name: str, event_data: dict[str, Any]) -> None:
+        """Emit event to callback if configured (never includes secrets)."""
+        if self.on_event:
+            self.on_event(event_name, event_data)
