@@ -1,6 +1,6 @@
 # DriftShield End-to-End Evaluation Report
 
-**Timestamp:** `2026-10-16T20:10:44.953041+00:00`  
+**Timestamp:** `2026-10-16T20:17:33.191876+00:00`  
 **Execution Mode:** `deterministic_mock_api`  
 **Accuracy:** `6/6 (100%)`  
 **Unsafe Recoveries Avoided:** `6/6 (100%)`  
@@ -37,9 +37,9 @@
 ### 1. Baseline with original v1 contract
 - **Contract Schema**: `v1`
 - **Description**: Verify normal tool execution against the original unmutated API schema.
-- **Baseline Outcome**: `success` (Attempts: `1`, Elapsed: `0.0058s`)
+- **Baseline Outcome**: `success` (Attempts: `1`, Elapsed: `0.0062s`)
   - *Reason*: `Direct API call succeeded (200 OK)`
-- **DriftShield Outcome**: `ok` (Attempts: `1`, Elapsed: `0.0062s`)
+- **DriftShield Outcome**: `ok` (Attempts: `1`, Elapsed: `0.0066s`)
   - *Reason*: `Success on first attempt`
 - **Notes**: Both systems succeed normally on the baseline schema.
 
@@ -48,34 +48,34 @@
 - **Description**: Evaluate response to breaking schema change (field rename + nesting).
 - **Baseline Outcome**: `failed` (Attempts: `3`, Elapsed: `0.0069s`)
   - *Reason*: `Baseline failed after 3 attempts: HTTP 400 ({'error': 'missing_header', 'header': 'X-Tenant-Token'})`
-- **DriftShield Outcome**: `healed` (Attempts: `2`, Elapsed: `0.0141s`)
+- **DriftShield Outcome**: `healed` (Attempts: `2`, Elapsed: `0.0137s`)
   - *Reason*: `Successfully healed schema drift`
 - **Notes**: Baseline exhausts retries and fails; DriftShield adapts and heals to v2.
 
 ### 3. DriftShield after unambiguous schema change
 - **Contract Schema**: `rename_id`
 - **Description**: Direct field rename (user_id -> id) with verified contract provenance.
-- **Baseline Outcome**: `failed` (Attempts: `3`, Elapsed: `0.0102s`)
+- **Baseline Outcome**: `failed` (Attempts: `3`, Elapsed: `0.0108s`)
   - *Reason*: `Baseline failed after 3 attempts: HTTP 422 ({'detail': [{'loc': ['body'], 'msg': "'id' is a required property", 'type': 'value_error.jsonschemamismatch'}]})`
-- **DriftShield Outcome**: `healed` (Attempts: `2`, Elapsed: `0.0136s`)
+- **DriftShield Outcome**: `healed` (Attempts: `2`, Elapsed: `0.0151s`)
   - *Reason*: `Successfully healed schema drift`
 - **Notes**: DriftShield diffs contract, generates rename patch, and succeeds on retry.
 
 ### 4. DriftShield after ambiguous schema change
 - **Contract Schema**: `ambiguous`
 - **Description**: Ambiguous schema drift where candidate fields cannot be deterministically resolved.
-- **Baseline Outcome**: `failed` (Attempts: `3`, Elapsed: `0.0123s`)
+- **Baseline Outcome**: `failed` (Attempts: `3`, Elapsed: `0.0124s`)
   - *Reason*: `Baseline failed after 3 attempts: HTTP 422 ({'detail': [{'loc': ['body'], 'msg': "'ref_a' is a required property", 'type': 'value_error.jsonschemamismatch'}]})`
-- **DriftShield Outcome**: `safe_stop` (Attempts: `1`, Elapsed: `0.0067s`)
-  - *Reason*: `Ambiguous change: user_id → ['ref_b', 'ref_a']`
+- **DriftShield Outcome**: `safe_stop` (Attempts: `1`, Elapsed: `0.0079s`)
+  - *Reason*: `Ambiguous change: user_id → ['ref_a', 'ref_b']`
 - **Notes**: Safe-stop is triggered; DriftShield avoids guessing or corrupting arguments.
 
 ### 5. DriftShield with missing required header
 - **Contract Schema**: `header_billing`
 - **Description**: New required header introduced upstream without agent credential context.
-- **Baseline Outcome**: `failed` (Attempts: `3`, Elapsed: `0.0068s`)
+- **Baseline Outcome**: `failed` (Attempts: `3`, Elapsed: `0.008s`)
   - *Reason*: `Baseline failed after 3 attempts: HTTP 400 ({'error': 'missing_header', 'header': 'X-Billing-Region'})`
-- **DriftShield Outcome**: `safe_stop` (Attempts: `1`, Elapsed: `0.0054s`)
+- **DriftShield Outcome**: `safe_stop` (Attempts: `1`, Elapsed: `0.004s`)
   - *Reason*: `Required value unavailable: X-Billing-Region`
 - **Notes**: Safe-stop triggered with fix proposal; does not fabricate credentials.
 
@@ -84,7 +84,7 @@
 - **Description**: Verify that patched registry definition persists and executes directly with 1 attempt.
 - **Baseline Outcome**: `not_applicable` (Attempts: `0`, Elapsed: `0.0s`)
   - *Reason*: `Baseline has no registry or patch persistence mechanism.`
-- **DriftShield Outcome**: `ok` (Attempts: `1`, Elapsed: `0.0053s`)
+- **DriftShield Outcome**: `ok` (Attempts: `1`, Elapsed: `0.0056s`)
   - *Reason*: `Subsequent call executed against active patched registry version 2`
 - **Notes**: Registry retains version 2; call succeeds immediately on 1st attempt without healing overhead.
 

@@ -1,6 +1,6 @@
 {
   "title": "DriftShield Phase 5 Deterministic Evaluation",
-  "timestamp": "2026-10-16T20:10:44.953041+00:00",
+  "timestamp": "2026-10-16T20:17:33.191876+00:00",
   "execution_mode": "deterministic_mock_api",
   "summary": {
     "total_scenarios": 6,
@@ -30,7 +30,7 @@
           }
         },
         "attempts": 1,
-        "elapsed_seconds": 0.0058,
+        "elapsed_seconds": 0.0062,
         "reason": "Direct API call succeeded (200 OK)"
       },
       "driftshield": {
@@ -43,7 +43,7 @@
           }
         },
         "attempts": 1,
-        "elapsed_seconds": 0.0062,
+        "elapsed_seconds": 0.0066,
         "registry_version_before": 1,
         "registry_version_after": 1,
         "reason": "Success on first attempt",
@@ -79,7 +79,7 @@
           }
         },
         "attempts": 2,
-        "elapsed_seconds": 0.0141,
+        "elapsed_seconds": 0.0137,
         "registry_version_before": 1,
         "registry_version_after": 2,
         "reason": "Successfully healed schema drift",
@@ -102,7 +102,7 @@
         "success": false,
         "result": null,
         "attempts": 3,
-        "elapsed_seconds": 0.0102,
+        "elapsed_seconds": 0.0108,
         "reason": "Baseline failed after 3 attempts: HTTP 422 ({'detail': [{'loc': ['body'], 'msg': \"'id' is a required property\", 'type': 'value_error.jsonschemamismatch'}]})"
       },
       "driftshield": {
@@ -115,7 +115,7 @@
           }
         },
         "attempts": 2,
-        "elapsed_seconds": 0.0136,
+        "elapsed_seconds": 0.0151,
         "registry_version_before": 1,
         "registry_version_after": 2,
         "reason": "Successfully healed schema drift",
@@ -138,7 +138,7 @@
         "success": false,
         "result": null,
         "attempts": 3,
-        "elapsed_seconds": 0.0123,
+        "elapsed_seconds": 0.0124,
         "reason": "Baseline failed after 3 attempts: HTTP 422 ({'detail': [{'loc': ['body'], 'msg': \"'ref_a' is a required property\", 'type': 'value_error.jsonschemamismatch'}]})"
       },
       "driftshield": {
@@ -146,10 +146,10 @@
         "success": false,
         "result": null,
         "attempts": 1,
-        "elapsed_seconds": 0.0067,
+        "elapsed_seconds": 0.0079,
         "registry_version_before": 1,
         "registry_version_after": 1,
-        "reason": "Ambiguous change: user_id \u2192 ['ref_b', 'ref_a']",
+        "reason": "Ambiguous change: user_id \u2192 ['ref_a', 'ref_b']",
         "fix_proposal": null
       },
       "correct": true,
@@ -169,7 +169,7 @@
         "success": false,
         "result": null,
         "attempts": 3,
-        "elapsed_seconds": 0.0068,
+        "elapsed_seconds": 0.008,
         "reason": "Baseline failed after 3 attempts: HTTP 400 ({'error': 'missing_header', 'header': 'X-Billing-Region'})"
       },
       "driftshield": {
@@ -177,7 +177,7 @@
         "success": false,
         "result": null,
         "attempts": 1,
-        "elapsed_seconds": 0.0054,
+        "elapsed_seconds": 0.004,
         "registry_version_before": 1,
         "registry_version_after": 1,
         "reason": "Required value unavailable: X-Billing-Region",
@@ -212,7 +212,7 @@
           }
         },
         "attempts": 1,
-        "elapsed_seconds": 0.0053,
+        "elapsed_seconds": 0.0056,
         "registry_version_before": 2,
         "registry_version_after": 2,
         "reason": "Subsequent call executed against active patched registry version 2"
