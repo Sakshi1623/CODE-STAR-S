@@ -349,12 +349,28 @@ def build_new_snapshot(
     
     # Update headers from live contract
     new_snapshot["required_headers"] = live_contract["required_headers"]
-    
-    # Verify schema matches live contract
+
+    # Update response_schema: prefer live contract value when present;
+    # otherwise carry the old tool schema forward so response validation
+    # can still run against the most-recently-known shape. deepcopy avoids aliasing.
+    if "response_schema" in live_contract:
+        new_snapshot["response_schema"] = copy.deepcopy(live_contract["response_schema"])
+    elif "response_schema" in old_tool:
+        new_snapshot["response_schema"] = copy.deepcopy(old_tool["response_schema"])
+    else:
+        # Neither source has a response schema; remove any stale copy.
+        new_snapshot.pop("response_schema", None)
+
+    # Verify body_schema and headers match live contract
     if new_snapshot["body_schema"] != live_contract["body_schema"]:
         return (None, "Schema mismatch: diff incomplete or incorrect")
-    
+
     if new_snapshot["required_headers"] != live_contract["required_headers"]:
         return (None, "Headers mismatch: diff incomplete")
-    
+
+    # Verify response_schema matches live contract when present
+    if "response_schema" in live_contract:
+        if "response_schema" not in new_snapshot or new_snapshot["response_schema"] != live_contract["response_schema"]:
+            return (None, "Response schema mismatch: diff incomplete")
+
     return (new_snapshot, None)

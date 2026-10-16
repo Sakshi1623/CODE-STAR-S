@@ -178,11 +178,51 @@ function App() {
     handleReset()
   }, [scenario])
 
-  const handleRunScenario = () => {
+  const handleRunScenario = async () => {
     setIsRunning(true)
     setCurrentStep(-1)
     setVisibleEvents([])
     setHasRun(true)
+
+    // Trigger actual backend workflow execution if backend is available
+    try {
+      if (scenario === 'successful_recovery') {
+        await fetch('/admin/mutate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: 'v2_full' })
+        }).catch(() => {})
+        await fetch('/api/demo/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tool_name: 'lookup_user', parameters: { user_id: '123' } })
+        }).catch(() => {})
+      } else if (scenario === 'safe_stop') {
+        await fetch('/admin/mutate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: 'header_billing' })
+        }).catch(() => {})
+        await fetch('/api/demo/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tool_name: 'lookup_user', parameters: { user_id: '123' } })
+        }).catch(() => {})
+      } else if (scenario === 'unresolved_drift') {
+        await fetch('/admin/mutate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: 'v2_full' })
+        }).catch(() => {})
+        await fetch('/users/lookup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: '123' })
+        }).catch(() => {})
+      }
+    } catch {
+      // Backend offline or network error: graceful animation fallback
+    }
 
     const stepsToShow = currentScenario.workflow.length
     const eventsToShow = currentScenario.events.length
@@ -213,6 +253,14 @@ function App() {
     if (timerRef.current) {
       clearTimeout(timerRef.current)
     }
+    // Reset backend API contract state if reachable
+    fetch('/admin/reset', { method: 'POST' }).catch(() => {})
+    fetch('/admin/fault', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: null })
+    }).catch(() => {})
+
     setIsRunning(false)
     setCurrentStep(-1)
     setVisibleEvents([])

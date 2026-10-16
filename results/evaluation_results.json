@@ -1,0 +1,225 @@
+{
+  "title": "DriftShield Phase 5 Deterministic Evaluation",
+  "timestamp": "2026-10-16T20:10:44.953041+00:00",
+  "execution_mode": "deterministic_mock_api",
+  "summary": {
+    "total_scenarios": 6,
+    "correct_outcomes": 6,
+    "unsafe_recoveries_avoided": 6,
+    "baseline_successes": 1,
+    "driftshield_successes": 4,
+    "driftshield_safe_stops": 2,
+    "driftshield_healed": 2
+  },
+  "scenarios": [
+    {
+      "scenario_id": "scenario_1_baseline_v1",
+      "name": "1. Baseline with original v1 contract",
+      "contract": "v1",
+      "description": "Verify normal tool execution against the original unmutated API schema.",
+      "input_args": {
+        "user_id": "123"
+      },
+      "baseline": {
+        "status": "success",
+        "success": true,
+        "result": {
+          "user": {
+            "id": 123,
+            "name": "Asha Rao"
+          }
+        },
+        "attempts": 1,
+        "elapsed_seconds": 0.0058,
+        "reason": "Direct API call succeeded (200 OK)"
+      },
+      "driftshield": {
+        "status": "ok",
+        "success": true,
+        "result": {
+          "user": {
+            "id": 123,
+            "name": "Asha Rao"
+          }
+        },
+        "attempts": 1,
+        "elapsed_seconds": 0.0062,
+        "registry_version_before": 1,
+        "registry_version_after": 1,
+        "reason": "Success on first attempt",
+        "fix_proposal": null
+      },
+      "correct": true,
+      "unsafe_recovery_avoided": true,
+      "notes": "Both systems succeed normally on the baseline schema."
+    },
+    {
+      "scenario_id": "scenario_2_baseline_breaking_drift",
+      "name": "2. Baseline after breaking schema change",
+      "contract": "v2_full",
+      "description": "Evaluate response to breaking schema change (field rename + nesting).",
+      "input_args": {
+        "user_id": "123"
+      },
+      "baseline": {
+        "status": "failed",
+        "success": false,
+        "result": null,
+        "attempts": 3,
+        "elapsed_seconds": 0.0069,
+        "reason": "Baseline failed after 3 attempts: HTTP 400 ({'error': 'missing_header', 'header': 'X-Tenant-Token'})"
+      },
+      "driftshield": {
+        "status": "healed",
+        "success": true,
+        "result": {
+          "user": {
+            "id": 123,
+            "name": "Asha Rao"
+          }
+        },
+        "attempts": 2,
+        "elapsed_seconds": 0.0141,
+        "registry_version_before": 1,
+        "registry_version_after": 2,
+        "reason": "Successfully healed schema drift",
+        "fix_proposal": null
+      },
+      "correct": true,
+      "unsafe_recovery_avoided": true,
+      "notes": "Baseline exhausts retries and fails; DriftShield adapts and heals to v2."
+    },
+    {
+      "scenario_id": "scenario_3_unambiguous_drift",
+      "name": "3. DriftShield after unambiguous schema change",
+      "contract": "rename_id",
+      "description": "Direct field rename (user_id -> id) with verified contract provenance.",
+      "input_args": {
+        "user_id": "123"
+      },
+      "baseline": {
+        "status": "failed",
+        "success": false,
+        "result": null,
+        "attempts": 3,
+        "elapsed_seconds": 0.0102,
+        "reason": "Baseline failed after 3 attempts: HTTP 422 ({'detail': [{'loc': ['body'], 'msg': \"'id' is a required property\", 'type': 'value_error.jsonschemamismatch'}]})"
+      },
+      "driftshield": {
+        "status": "healed",
+        "success": true,
+        "result": {
+          "user": {
+            "id": 123,
+            "name": "Asha Rao"
+          }
+        },
+        "attempts": 2,
+        "elapsed_seconds": 0.0136,
+        "registry_version_before": 1,
+        "registry_version_after": 2,
+        "reason": "Successfully healed schema drift",
+        "fix_proposal": null
+      },
+      "correct": true,
+      "unsafe_recovery_avoided": true,
+      "notes": "DriftShield diffs contract, generates rename patch, and succeeds on retry."
+    },
+    {
+      "scenario_id": "scenario_4_ambiguous_safe_stop",
+      "name": "4. DriftShield after ambiguous schema change",
+      "contract": "ambiguous",
+      "description": "Ambiguous schema drift where candidate fields cannot be deterministically resolved.",
+      "input_args": {
+        "user_id": "123"
+      },
+      "baseline": {
+        "status": "failed",
+        "success": false,
+        "result": null,
+        "attempts": 3,
+        "elapsed_seconds": 0.0123,
+        "reason": "Baseline failed after 3 attempts: HTTP 422 ({'detail': [{'loc': ['body'], 'msg': \"'ref_a' is a required property\", 'type': 'value_error.jsonschemamismatch'}]})"
+      },
+      "driftshield": {
+        "status": "safe_stop",
+        "success": false,
+        "result": null,
+        "attempts": 1,
+        "elapsed_seconds": 0.0067,
+        "registry_version_before": 1,
+        "registry_version_after": 1,
+        "reason": "Ambiguous change: user_id \u2192 ['ref_b', 'ref_a']",
+        "fix_proposal": null
+      },
+      "correct": true,
+      "unsafe_recovery_avoided": true,
+      "notes": "Safe-stop is triggered; DriftShield avoids guessing or corrupting arguments."
+    },
+    {
+      "scenario_id": "scenario_5_unsupported_header_safe_stop",
+      "name": "5. DriftShield with missing required header",
+      "contract": "header_billing",
+      "description": "New required header introduced upstream without agent credential context.",
+      "input_args": {
+        "user_id": "123"
+      },
+      "baseline": {
+        "status": "failed",
+        "success": false,
+        "result": null,
+        "attempts": 3,
+        "elapsed_seconds": 0.0068,
+        "reason": "Baseline failed after 3 attempts: HTTP 400 ({'error': 'missing_header', 'header': 'X-Billing-Region'})"
+      },
+      "driftshield": {
+        "status": "safe_stop",
+        "success": false,
+        "result": null,
+        "attempts": 1,
+        "elapsed_seconds": 0.0054,
+        "registry_version_before": 1,
+        "registry_version_after": 1,
+        "reason": "Required value unavailable: X-Billing-Region",
+        "fix_proposal": "Missing headers: ['X-Billing-Region']"
+      },
+      "correct": true,
+      "unsafe_recovery_avoided": true,
+      "notes": "Safe-stop triggered with fix proposal; does not fabricate credentials."
+    },
+    {
+      "scenario_id": "scenario_6_healed_registry_reuse",
+      "name": "6. Repeated call after successful healing",
+      "contract": "rename_id",
+      "description": "Verify that patched registry definition persists and executes directly with 1 attempt.",
+      "input_args": {
+        "id": "123"
+      },
+      "baseline": {
+        "status": "not_applicable",
+        "success": false,
+        "attempts": 0,
+        "elapsed_seconds": 0.0,
+        "reason": "Baseline has no registry or patch persistence mechanism."
+      },
+      "driftshield": {
+        "status": "ok",
+        "success": true,
+        "result": {
+          "user": {
+            "id": 123,
+            "name": "Asha Rao"
+          }
+        },
+        "attempts": 1,
+        "elapsed_seconds": 0.0053,
+        "registry_version_before": 2,
+        "registry_version_after": 2,
+        "reason": "Subsequent call executed against active patched registry version 2"
+      },
+      "correct": true,
+      "unsafe_recovery_avoided": true,
+      "notes": "Registry retains version 2; call succeeds immediately on 1st attempt without healing overhead."
+    }
+  ]
+}

@@ -201,3 +201,66 @@ def set_fault(req: FaultRequest) -> dict:
 def get_stats() -> dict:
     """Get execution statistics."""
     return _execution_stats
+
+
+# =============================================================================
+# Control Room Backend API & SSE Integration
+# =============================================================================
+import os
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.testclient import TestClient
+
+from driftshield.api.routes import create_api_router
+from driftshield.api.sse import SSEBroadcaster
+from driftshield.shield import Shield
+
+_raw_cors = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://localhost:8000",
+)
+_cors_origins = [o.strip() for o in _raw_cors.split(",") if o.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+_broadcaster = SSEBroadcaster()
+_shield = Shield(
+    client=TestClient(app),
+    on_event=_broadcaster.on_shield_event,
+    enable_sentinel=False,
+)
+_api_router = create_api_router(_shield, _broadcaster)
+app.include_router(_api_router, prefix="/api")
+
+# Expose references on app.state
+app.state.shield = _shield
+app.state.broadcaster = _broadcaster
+
+from contextlib import asynccontextmanager
+import asyncio
+
+@asynccontextmanager
+async def _app_lifespan(app_instance: FastAPI):
+    global _shield
+    try:
+        loop = asyncio.get_running_loop()
+        _broadcaster.set_loop(loop)
+    except Exception:
+        pass
+    if _shield.is_closed:
+        _shield = Shield(
+            client=TestClient(app),
+            on_event=_broadcaster.on_shield_event,
+            enable_sentinel=False,
+        )
+        app.state.shield = _shield
+    yield
+    if not _shield.is_closed:
+        _shield.close()
+
+app.router.lifespan_context = _app_lifespan

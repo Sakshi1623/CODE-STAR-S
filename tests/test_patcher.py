@@ -510,3 +510,85 @@ def test_build_new_snapshot_unchanged_fields_preserved():
     
     # Schema updated
     assert snapshot["body_schema"] == rename_contract["body_schema"]
+
+
+def test_build_new_snapshot_response_schema_copied_and_verified():
+    """Test: When live contract has response_schema, new snapshot has matching response_schema."""
+    import copy
+    registry = create_default_registry()
+    v1_tool = registry.get("lookup_user")
+    v2_contract = copy.deepcopy(CONTRACTS["v2_full"])
+    v2_contract["response_schema"] = {
+        "type": "object",
+        "properties": {"result": {"type": "string"}},
+        "required": ["result"],
+    }
+
+    changes = diff(v1_tool, v2_contract)
+    snapshot, error = build_new_snapshot(v1_tool, changes, v2_contract)
+
+    assert error is None
+    assert snapshot is not None
+    assert snapshot["response_schema"] == v2_contract["response_schema"]
+
+
+def test_build_new_snapshot_preserves_old_response_schema_when_live_omits():
+    """Test: When live contract omits response_schema, old tool's response_schema is preserved."""
+    registry = create_default_registry()
+    v1_tool = registry.get("lookup_user")
+    rename_contract = CONTRACTS["rename_id"]
+    assert "response_schema" not in rename_contract
+    assert "response_schema" in v1_tool
+
+    changes = diff(v1_tool, rename_contract)
+    snapshot, error = build_new_snapshot(v1_tool, changes, rename_contract)
+
+    assert error is None
+    assert snapshot is not None
+    assert snapshot["response_schema"] == v1_tool["response_schema"]
+
+
+def test_build_new_snapshot_absent_response_schema_in_both():
+    """Test: When neither old tool nor live contract has response_schema, snapshot has none."""
+    import copy
+    registry = create_default_registry()
+    v1_tool = copy.deepcopy(registry.get("lookup_user"))
+    v1_tool.pop("response_schema", None)
+    rename_contract = CONTRACTS["rename_id"]
+
+    changes = diff(v1_tool, rename_contract)
+    snapshot, error = build_new_snapshot(v1_tool, changes, rename_contract)
+
+    assert error is None
+    assert snapshot is not None
+    assert "response_schema" not in snapshot
+
+
+def test_build_new_snapshot_fails_verification_on_response_schema_mismatch():
+    """Test: Snapshot verification fails if response_schema does not match live contract."""
+    import copy
+    from unittest.mock import patch
+    registry = create_default_registry()
+    v1_tool = registry.get("lookup_user")
+    live_contract = copy.deepcopy(CONTRACTS["v2_full"])
+    live_contract["response_schema"] = {
+        "type": "object",
+        "properties": {"data": {"type": "string"}},
+    }
+
+    changes = diff(v1_tool, live_contract)
+
+    # Intercept copy.deepcopy to simulate a corrupted/mismatched response_schema in snapshot
+    original_deepcopy = copy.deepcopy
+
+    def fake_deepcopy(obj):
+        res = original_deepcopy(obj)
+        if isinstance(obj, dict) and "data" in obj.get("properties", {}):
+            return {"type": "object", "properties": {"mismatched": {"type": "integer"}}}
+        return res
+
+    with patch("copy.deepcopy", side_effect=fake_deepcopy):
+        snapshot, error = build_new_snapshot(v1_tool, changes, live_contract)
+
+    assert snapshot is None
+    assert error == "Response schema mismatch: diff incomplete"

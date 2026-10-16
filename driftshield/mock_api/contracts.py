@@ -23,6 +23,7 @@ class Contract(TypedDict):
     operation: str
     required_headers: list[str]
     body_schema: dict[str, Any]
+    response_schema: NotRequired[dict[str, Any]]  # Optional response body schema
     mappings: NotRequired[list[dict[str, str]]]  # Optional mappings with from/to keys
 
 
@@ -45,6 +46,7 @@ def _build_contract(
     operation: str,
     body_schema: dict[str, Any],
     required_headers: list[str] | None = None,
+    response_schema: dict[str, Any] | None = None,
     mappings: list[dict[str, str]] | None = None,
 ) -> Contract:
     """
@@ -55,6 +57,7 @@ def _build_contract(
         operation: Operation name
         body_schema: JSON Schema for request body
         required_headers: List of required header names
+        response_schema: Optional JSON Schema for response body
         mappings: Optional list of field mappings
         
     Returns:
@@ -66,6 +69,8 @@ def _build_contract(
         "required_headers": required_headers or [],
         "body_schema": body_schema,
     }
+    if response_schema:
+        base["response_schema"] = response_schema
     if mappings:
         base["mappings"] = mappings
     
@@ -85,6 +90,22 @@ CONTRACTS: dict[str, Contract] = {
                 "user_id": {"type": "string"}
             },
             "required": ["user_id"],
+            "additionalProperties": False,
+        },
+        response_schema={
+            "type": "object",
+            "properties": {
+                "user": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "name": {"type": "string"}
+                    },
+                    "required": ["id", "name"],
+                    "additionalProperties": True,
+                }
+            },
+            "required": ["user"],
             "additionalProperties": False,
         },
     ),

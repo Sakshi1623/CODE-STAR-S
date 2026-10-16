@@ -3,7 +3,7 @@
 import pytest
 from pathlib import Path
 
-from driftshield.healer.registry import ToolRegistry, Tool, create_default_registry
+from driftshield.healer.registry import ToolRegistry, Tool, create_default_registry, StaleVersionError
 from driftshield.healer import log
 from driftshield import config
 
@@ -45,7 +45,7 @@ def clean_log():
 def test_registry_register_and_get(registry, sample_tool):
     """Test registering and retrieving a tool."""
     registry.register(sample_tool)
-    
+
     retrieved = registry.get("test_tool")
     assert retrieved is not None
     assert retrieved["name"] == "test_tool"
@@ -56,13 +56,13 @@ def test_registry_register_and_get(registry, sample_tool):
 def test_build_tools_reflects_patch_immediately(registry, sample_tool):
     """Test that build_tools reflects a patch immediately."""
     registry.register(sample_tool)
-    
+
     # Initial build
     tools = registry.build_tools()
     assert len(tools) == 1
     assert tools[0]["name"] == "test_tool"
     assert tools[0]["parameters"]["properties"]["param1"]["type"] == "string"
-    
+
     # Apply patch with changed schema
     patched_tool = sample_tool.copy()
     patched_tool["body_schema"] = {
@@ -71,7 +71,7 @@ def test_build_tools_reflects_patch_immediately(registry, sample_tool):
         "required": ["param1"],
     }
     registry.apply_patch("test_tool", patched_tool, "changed type")
-    
+
     # Build again - should reflect patch immediately
     tools_after = registry.build_tools()
     assert len(tools_after) == 1
@@ -82,13 +82,13 @@ def test_version_increases_on_patch(registry, sample_tool):
     """Test that version increases on patch."""
     registry.register(sample_tool)
     assert registry.version("test_tool") == 1
-    
+
     # Apply first patch
     patched_tool = sample_tool.copy()
     patched_tool["body_schema"] = {"type": "object", "properties": {}}
     registry.apply_patch("test_tool", patched_tool, "first patch")
     assert registry.version("test_tool") == 2
-    
+
     # Apply second patch
     registry.apply_patch("test_tool", patched_tool, "second patch")
     assert registry.version("test_tool") == 3
@@ -98,13 +98,13 @@ def test_version_increases_on_rollback(registry, sample_tool):
     """Test that version increases on rollback."""
     registry.register(sample_tool)
     assert registry.version("test_tool") == 1
-    
+
     # Apply patch
     patched_tool = sample_tool.copy()
     patched_tool["body_schema"] = {"type": "object", "properties": {"new_field": {"type": "string"}}}
     registry.apply_patch("test_tool", patched_tool, "patch")
     assert registry.version("test_tool") == 2
-    
+
     # Rollback
     registry.rollback("test_tool")
     assert registry.version("test_tool") == 3  # Version continues to increase
@@ -113,9 +113,9 @@ def test_version_increases_on_rollback(registry, sample_tool):
 def test_rollback_restores_old_schema(registry, sample_tool):
     """Test that rollback restores the previous body_schema."""
     registry.register(sample_tool)
-    
+
     original_schema = sample_tool["body_schema"].copy()
-    
+
     # Apply patch with new schema
     patched_tool = sample_tool.copy()
     patched_tool["body_schema"] = {
@@ -124,13 +124,13 @@ def test_rollback_restores_old_schema(registry, sample_tool):
         "required": ["new_param"],
     }
     registry.apply_patch("test_tool", patched_tool, "change schema")
-    
+
     # Verify patch applied
     assert registry.get("test_tool")["body_schema"]["properties"].get("new_param") is not None
-    
+
     # Rollback
     registry.rollback("test_tool")
-    
+
     # Verify original schema restored
     restored = registry.get("test_tool")
     assert restored["body_schema"]["properties"].get("param1") is not None
@@ -141,7 +141,7 @@ def test_rollback_restores_old_schema(registry, sample_tool):
 def test_rollback_without_history_raises(registry, sample_tool):
     """Test that rollback raises when no history exists."""
     registry.register(sample_tool)
-    
+
     with pytest.raises(KeyError, match="No history available"):
         registry.rollback("test_tool")
 
@@ -155,13 +155,13 @@ def test_log_redacts_secrets(clean_log):
         "secret": "api_secret",
         "safe_data": "this_is_ok",
     }
-    
+
     log.log_event(event)
-    
+
     # Read back
     events = log.read_all()
     assert len(events) == 1
-    
+
     logged = events[0]
     assert logged["value"] == "<redacted>"
     assert logged["token"] == "<redacted>"
@@ -186,12 +186,12 @@ def test_log_redacts_nested_secrets(clean_log):
             {"public": "ok"}
         ]
     }
-    
+
     log.log_event(event)
-    
+
     events = log.read_all()
     logged = events[0]
-    
+
     assert logged["data"]["token"] == "<redacted>"
     assert logged["data"]["metadata"]["value"] == "<redacted>"
     assert logged["list_data"][0]["secret"] == "<redacted>"
@@ -201,7 +201,7 @@ def test_log_redacts_nested_secrets(clean_log):
 def test_create_default_registry():
     """Test that default registry contains lookup_user tool."""
     registry = create_default_registry()
-    
+
     tool = registry.get("lookup_user")
     assert tool is not None
     assert tool["name"] == "lookup_user"
@@ -213,10 +213,10 @@ def test_create_default_registry():
 def test_build_tools_no_caching(registry, sample_tool):
     """Test that build_tools returns fresh list on every call."""
     registry.register(sample_tool)
-    
+
     tools1 = registry.build_tools()
     tools2 = registry.build_tools()
-    
+
     # Should be equal but not the same object
     assert tools1 == tools2
     assert tools1 is not tools2
@@ -230,11 +230,11 @@ def test_config_get_header_value():
     value, origin = result
     assert origin == "config"
     assert value == "test-tenant-token-123"
-    
+
     # Unknown header
     result = config.get_header_value("X-Billing-Region")
     assert result is None
-    
+
     # Random header
     result = config.get_header_value("X-Random-Header")
     assert result is None
@@ -243,3 +243,33 @@ def test_config_get_header_value():
 def test_config_base_url():
     """Test that BASE_URL is loaded from config."""
     assert config.BASE_URL == "http://localhost:8000"
+
+
+def test_registry_apply_patch_rejects_stale_expected_version(registry, sample_tool):
+    """Test that apply_patch raises StaleVersionError when expected_version does not match."""
+    registry.register(sample_tool)
+    assert registry.version("test_tool") == 1
+
+    # Apply patch 1 successfully with expected_version=1
+    patched_1 = sample_tool.copy()
+    patched_1["description"] = "Version 2"
+    registry.apply_patch("test_tool", patched_1, "update 1", expected_version=1)
+    assert registry.version("test_tool") == 2
+
+    # Attempt to apply patch with stale expected_version=1 (current is 2)
+    stale_patch = sample_tool.copy()
+    stale_patch["description"] = "Stale attempt"
+    with pytest.raises(StaleVersionError) as exc_info:
+        registry.apply_patch("test_tool", stale_patch, "stale update", expected_version=1)
+
+    assert "stale version" in str(exc_info.value).lower()
+    # Version remains 2, snapshot untouched
+    assert registry.version("test_tool") == 2
+    assert registry.get("test_tool")["description"] == "Version 2"
+
+    # Now apply with correct expected_version=2
+    valid_patch = sample_tool.copy()
+    valid_patch["description"] = "Version 3"
+    registry.apply_patch("test_tool", valid_patch, "valid update", expected_version=2)
+    assert registry.version("test_tool") == 3
+    assert registry.get("test_tool")["description"] == "Version 3"

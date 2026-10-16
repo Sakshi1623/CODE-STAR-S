@@ -18,6 +18,30 @@ from driftshield.healer.registry import ToolRegistry
 HealStatus = Literal["ok", "healed", "safe_stop", "failed"]
 
 
+def fetch_live_contract_fn(client) -> "dict | None":
+    """Fetch the live contract from /schema endpoint.
+
+    Used by both the initial success path (response drift detection) and
+    the request-failure path (error classification). Returns None on any error.
+
+    Args:
+        client: httpx.Client or FastAPI TestClient
+
+    Returns:
+        Contract dict or None
+    """
+    try:
+        if hasattr(client, "get"):
+            response = client.get("/schema")
+        else:
+            response = client.get(f"{client.base_url}/schema")
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return None
+
+
 class Budget:
     """
     Shared budget for API and model calls.
@@ -157,8 +181,92 @@ class HealingExecutor:
         })
 
         if result["ok"]:
-            # Success - no healing needed
-            # No failure occurred, so t_first_failure and t_first_success remain None
+            # HTTP 2xx: validate the response body against the registered
+            # response schema before accepting it as a valid business result.
+            response_schema = tool.get("response_schema")
+            if response_schema is not None:
+                try:
+                    jsonschema.validate(instance=result["body"], schema=response_schema)
+                except jsonschema.ValidationError as _resp_err:
+                    # Response body violates the registered schema.
+                    # Attempt to determine whether this is genuine response drift
+                    # (live contract changed) or a broken API response.
+                    live_contract_for_resp = fetch_live_contract_fn(self.client)
+                    live_resp_schema = (
+                        live_contract_for_resp.get("response_schema")
+                        if live_contract_for_resp else None
+                    )
+                    if live_resp_schema is not None:
+                        try:
+                            jsonschema.validate(instance=result["body"], schema=live_resp_schema)
+                            # Body matches live schema but NOT registered schema.
+                            # This is genuine response drift: the API changed its
+                            # response format and the registry is stale.
+                            # Record the event but do NOT auto-retry (operation may
+                            # not be idempotent) and do NOT expose an unverified body.
+                            self._emit_event("response_drift_detected", {
+                                "tool_name": tool_name,
+                                "registered_schema": response_schema,
+                                "live_schema": live_resp_schema,
+                                "validation_error": str(_resp_err.message),
+                            })
+                            if self.log_events:
+                                log.log_event({
+                                    "event": "response_validation_failure",
+                                    "tool": tool_name,
+                                    "kind": "response_drift",
+                                    "reason": "body matches live contract response_schema but not registered schema",
+                                    "validation_error": str(_resp_err.message),
+                                })
+                            return HealResult({
+                                "status": "safe_stop",
+                                "result_body": None,
+                                "reason": (
+                                    "Response drift detected: API returned HTTP 200 but the "
+                                    "response body matches the live contract schema rather than "
+                                    f"the registered schema. Validation error: {_resp_err.message}"
+                                ),
+                                "fix_proposal": "Update registry response_schema to match live contract",
+                                "registry_version_before": version_before,
+                                "registry_version_after": version_before,
+                                "elapsed_seconds": time.time() - start_time,
+                                "attempts": attempts,
+                                "t_first_failure": None,
+                                "t_first_success": None,
+                            })
+                        except jsonschema.ValidationError:
+                            pass  # Fall through: body fails both schemas (broken API)
+                    # Body fails registered schema AND (live schema unavailable OR
+                    # body also fails live schema). Safe-stop: do not expose invalid body.
+                    self._emit_event("response_validation_failed", {
+                        "tool_name": tool_name,
+                        "validation_error": str(_resp_err.message),
+                    })
+                    if self.log_events:
+                        log.log_event({
+                            "event": "response_validation_failure",
+                            "tool": tool_name,
+                            "kind": "invalid_response",
+                            "reason": "body fails registered and live response schemas",
+                            "validation_error": str(_resp_err.message),
+                        })
+                    return HealResult({
+                        "status": "safe_stop",
+                        "result_body": None,
+                        "reason": (
+                            "Response validation failed: HTTP 200 but body does not match "
+                            f"registered or live response schema. Validation error: {_resp_err.message}"
+                        ),
+                        "fix_proposal": None,
+                        "registry_version_before": version_before,
+                        "registry_version_after": version_before,
+                        "elapsed_seconds": time.time() - start_time,
+                        "attempts": attempts,
+                        "t_first_failure": None,
+                        "t_first_success": None,
+                    })
+
+            # Response is valid (or no schema to validate against)
             self._emit_event("success", {
                 "tool_name": tool_name,
                 "attempts": attempts,
@@ -181,21 +289,7 @@ class HealingExecutor:
         t_first_failure = time.time()
 
         # Step 2: Classify error
-        def fetch_live_contract():
-            try:
-                # Handle TestClient vs httpx.Client
-                if hasattr(self.client, 'get'):
-                    response = self.client.get("/schema")
-                else:
-                    response = self.client.get(f"{self.client.base_url}/schema")
-
-                if response.status_code == 200:
-                    return response.json()
-            except Exception:
-                pass
-            return None
-
-        classification = classify(result, tool, fetch_live_contract)
+        classification = classify(result, tool, lambda: fetch_live_contract_fn(self.client))
         kind = classification["kind"]
 
         self._emit_event("classified", {
@@ -459,7 +553,46 @@ class HealingExecutor:
                         "t_first_success": t_first_success,
                     })
 
-                # Success!
+                # Validate response body against patched tool's response schema.
+                # IMPORTANT: do NOT roll back the valid request-side patch if
+                # only the response body is malformed.  The patch was correct;
+                # the response failure is a separate problem.
+                patched_resp_schema = patched_tool.get("response_schema") if patched_tool else None
+                if patched_resp_schema is not None:
+                    try:
+                        jsonschema.validate(instance=retry_result["body"], schema=patched_resp_schema)
+                    except jsonschema.ValidationError as _retry_resp_err:
+                        # Retry response is malformed.  Keep the request patch in place
+                        # (registry_version_after is preserved) but do not expose the body.
+                        self._emit_event("response_validation_failed", {
+                            "tool_name": tool_name,
+                            "phase": "retry",
+                            "validation_error": str(_retry_resp_err.message),
+                        })
+                        self._log_event(
+                            tool_name, version_before, version_after, live_hash, response_hash,
+                            changes, combined_provenance, "response_validation_failed",
+                            time.time() - start_time
+                        )
+                        return HealResult({
+                            "status": "safe_stop",
+                            "result_body": None,
+                            "reason": (
+                                "Retry response validation failed: request-side patch was correct "
+                                "but the response body is malformed. "
+                                f"Validation error: {_retry_resp_err.message}"
+                            ),
+                            "fix_proposal": None,
+                            # Preserve version_after: the request patch is valid and stays
+                            "registry_version_before": version_before,
+                            "registry_version_after": version_after,
+                            "elapsed_seconds": time.time() - start_time,
+                            "attempts": attempts,
+                            "t_first_failure": t_first_failure,
+                            "t_first_success": t_first_success,
+                        })
+
+                # Retry body is valid (or no schema).  Healing complete.
                 self._log_event(
                     tool_name, version_before, version_after, live_hash, response_hash,
                     changes, combined_provenance, "healed", time.time() - start_time
