@@ -8,6 +8,19 @@ Phase 3.2 - Healing Agent with LLM Integration
 
 ---
 
+## ⚠️ Model Evidence Status (as of Phase 2 offline review)
+
+| Model | Live multi-turn test status | Evidence location |
+|---|---|---|
+| `gpt-6-luna` | ✅ **Passed** — all four integration tests (a, b, c, d) ran successfully before rate limit | This document, section "Test Results" below |
+| `gemini-3.8-flash` | ❌ **Not yet verified live** — this is the currently configured model (`llm.py:114`) | No live run recorded against this model |
+
+**Important:** The mocked offline tests (`test_v*_mocked`, `test_serialization_fix.py`, `test_thought_signature.py`, `test_llm_smoke.py`) all pass with `gemini-3.8-flash` configured as the model name **in the mock**, but they do not make real API calls. They prove the agent logic is correct; they do not prove that `gemini-3.8-flash` is reachable at the configured endpoint or that it returns responses in the expected format.
+
+A live verification run with `DRIFTSHIELD_LIVE_TESTS=1 GEMINI_API_KEY=<key>` targeting `gemini-3.8-flash` has not yet been executed. The section "##Key Discoveries" below refers to `gpt-6-luna`-specific findings that **may not apply** to `gemini-3.8-flash` (e.g. the `reasoning_effort` workaround was removed when switching models).
+
+---
+
 ## Files Created/Modified
 
 ### 1. `driftshield/agents/healing_agent.py` (NEW)

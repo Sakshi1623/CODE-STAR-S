@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
+from openai import OpenAI, APIConnectionError, APITimeoutError, NotFoundError
 from dotenv import load_dotenv
 
 from driftshield.healer.retry import Budget
@@ -154,6 +154,18 @@ class LLMClient:
         # Make the API call
         try:
             response = self.client.chat.completions.create(**request_params)
+        except APIConnectionError as e:
+            # Network-level connection failure (DNS, TCP, proxy).
+            # Treat as transient: the same request may succeed on retry.
+            raise TransientError(f"Connection error: {e}", status_code=None) from e
+        except APITimeoutError as e:
+            # Request timed out before the server responded.
+            # Treat as transient: safe to retry.
+            raise TransientError(f"Request timed out: {e}", status_code=None) from e
+        except NotFoundError as e:
+            # 404: model name wrong, endpoint removed, or resource missing.
+            # This is a permanent client-side error, not a transient failure.
+            raise BadRequestError(f"Not found (check model name/endpoint): {e}", status_code=404) from e
         except Exception as e:
             # Wrap API errors with appropriate types
             error_msg = str(e).lower()

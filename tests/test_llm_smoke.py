@@ -530,3 +530,123 @@ def test_mocked_tests_work_without_api_key():
         # Restore original key
         if original_key:
             os.environ["GEMINI_API_KEY"] = original_key
+
+
+def test_llm_connection_error_handling():
+    """
+    Test that APIConnectionError (network failure before HTTP response) is
+    classified as TransientError with status_code=None.
+
+    Covers the new explicit except clause in llm.py:
+        except APIConnectionError as e:
+            raise TransientError(f"Connection error: {e}", status_code=None) from e
+    """
+    import httpx as _httpx
+    from openai import APIConnectionError as _APIConnectionError
+    from driftshield.agents.llm import TransientError
+
+    budget = Budget(max_model_calls=1, max_api_attempts=5)
+
+    with patch('driftshield.agents.llm.load_dotenv'), \
+         patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), \
+         patch('driftshield.agents.llm.OpenAI') as mock_openai:
+
+        # APIConnectionError requires a request keyword argument
+        dummy_request = _httpx.Request("POST", "https://generativelanguage.googleapis.com/")
+        connection_error = _APIConnectionError(
+            message="Connection refused",
+            request=dummy_request,
+        )
+
+        mock_client_instance = Mock()
+        mock_client_instance.chat.completions.create.side_effect = connection_error
+        mock_openai.return_value = mock_client_instance
+
+        client = LLMClient(budget)
+
+        with pytest.raises(TransientError) as exc_info:
+            client.chat([{"role": "user", "content": "Test"}])
+
+        assert exc_info.value.status_code is None
+        assert "connection" in str(exc_info.value).lower()
+
+
+def test_llm_timeout_error_handling():
+    """
+    Test that APITimeoutError (request timed out) is classified as
+    TransientError with status_code=None.
+
+    Covers the new explicit except clause in llm.py:
+        except APITimeoutError as e:
+            raise TransientError(f"Request timed out: {e}", status_code=None) from e
+    """
+    import httpx as _httpx
+    from openai import APITimeoutError as _APITimeoutError
+    from driftshield.agents.llm import TransientError
+
+    budget = Budget(max_model_calls=1, max_api_attempts=5)
+
+    with patch('driftshield.agents.llm.load_dotenv'), \
+         patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), \
+         patch('driftshield.agents.llm.OpenAI') as mock_openai:
+
+        # APITimeoutError requires a request positional argument
+        dummy_request = _httpx.Request("POST", "https://generativelanguage.googleapis.com/")
+        timeout_error = _APITimeoutError(request=dummy_request)
+
+        mock_client_instance = Mock()
+        mock_client_instance.chat.completions.create.side_effect = timeout_error
+        mock_openai.return_value = mock_client_instance
+
+        client = LLMClient(budget)
+
+        with pytest.raises(TransientError) as exc_info:
+            client.chat([{"role": "user", "content": "Test"}])
+
+        assert exc_info.value.status_code is None
+        assert "timed out" in str(exc_info.value).lower()
+
+
+def test_llm_not_found_error_handling():
+    """
+    Test that openai.NotFoundError (404 — wrong model name or endpoint)
+    is classified as BadRequestError with status_code=404.
+
+    This is a permanent client-side error (wrong configuration), not
+    a transient failure. Covers the new explicit except clause in llm.py:
+        except NotFoundError as e:
+            raise BadRequestError(f"Not found ...: {e}", status_code=404) from e
+    """
+    import httpx as _httpx
+    from openai import NotFoundError as _NotFoundError
+    from driftshield.agents.llm import BadRequestError
+
+    budget = Budget(max_model_calls=1, max_api_attempts=5)
+
+    with patch('driftshield.agents.llm.load_dotenv'), \
+         patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), \
+         patch('driftshield.agents.llm.OpenAI') as mock_openai:
+
+        # NotFoundError requires message, response, and body
+        dummy_request = _httpx.Request("POST", "https://generativelanguage.googleapis.com/")
+        dummy_response = _httpx.Response(
+            status_code=404,
+            request=dummy_request,
+        )
+        not_found_error = _NotFoundError(
+            message="Model 'gemini-3.8-flash' not found",
+            response=dummy_response,
+            body={"error": {"message": "Model not found"}},
+        )
+
+        mock_client_instance = Mock()
+        mock_client_instance.chat.completions.create.side_effect = not_found_error
+        mock_openai.return_value = mock_client_instance
+
+        client = LLMClient(budget)
+
+        with pytest.raises(BadRequestError) as exc_info:
+            client.chat([{"role": "user", "content": "Test"}])
+
+        assert exc_info.value.status_code == 404
+        assert "not found" in str(exc_info.value).lower()
